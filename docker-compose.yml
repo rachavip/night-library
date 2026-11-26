@@ -2,16 +2,16 @@ name: ebooks
 
 services:
   ebooks:
-    # ===== 部署前只需改这一行 =====
-    # 把 your-github-name 换成你的 GitHub 用户名（必须小写），
-    # 仓库名保持 night-library，与 DEPLOY_GITHUB.md 里的步骤一致。
-    image: ghcr.io/rachavip/night-library:latest
-    # 如果想在自己的机器上本地构建（不经过 GitHub），
-    # 改用同目录下的 docker-compose.build.yml 即可。
+    # 镜像由 GitHub Actions 推送到 ghcr.io，这里走南京大学镜像站前缀，国内拉取很快。
+    # 镜像内容完全相同（同一个仓库、同一个 latest 标签），只是下载走国内通道。
+    # 如果哪天南大源失效，可换成 ghcr.1ms.run/rachavip/night-library:latest
+    image: ghcr.nju.edu.cn/rachavip/night-library:latest
+    # 如果想在本地构建（不经过 GitHub），改用 docker-compose.build.yml。
     container_name: ebooks
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      # 宿主机端口 8421 → 容器 8080；访问地址为 http://NAS地址:8421
+      - "8421:8080"
     volumes:
       # 把飞牛 NAS 的 vol1 整个挂进去，且路径保持一致。
       # 这样在网页设置里填 /vol1/1000/任意文件夹 都能被刮削到（只读，不动原书）。
@@ -24,3 +24,13 @@ services:
       BOOKS_DIR: /vol1/1000/EBook
       DATA_DIR: /app/data
       PORT: "8080"
+      # ===== 自动刮削（默认已启用，改频率才取消注释）=====
+      # 每次启动自动刮一次，默认开启；设 0 可关闭（首次无索引时仍会刮）
+      # SCAN_ON_START: 1
+      # 定时刮削间隔，单位分钟，默认 60；设 0 = 只保留启动刮一次
+      # SCAN_INTERVAL_MINUTES: 60
+      # ===== 以下都是可选配置，用到才取消注释 =====
+      # 音乐地址：程序里已预填好，自己用不用填。
+      # 如果别人拿去用、不知道在网页哪里改地址，可以在这里指定，优先级高于网页保存值。
+      # MUSIC_URL: http://192.168.1.20:9500
+      # MUSIC_MODE: embed   # embed = 网页嵌入（AnyListen 等）；subsonic = 随机播放条（Navidrome 等）

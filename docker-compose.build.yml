@@ -9,12 +9,16 @@ services:
     container_name: ebooks
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      # 与镜像版保持一致，访问地址同样是 http://NAS地址:8421
+      - "8421:8080"
     volumes:
       - /vol1:/vol1:ro
       - ./data:/app/data
     environment:
       TZ: Asia/Shanghai
-      BOOKS_DIR: /vol1/1000/docker/ebooks
+      BOOKS_DIR: /vol1/1000/EBook
       DATA_DIR: /app/data
       PORT: "8080"
+      # 自动刮削：默认每次启动刮一次 + 每 60 分钟刮一次
+      # SCAN_ON_START: 1
+      # SCAN_INTERVAL_MINUTES: 60   # 设 0 = 只保留启动刮一次
