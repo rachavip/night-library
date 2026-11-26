@@ -4,6 +4,9 @@ const fsp = fs.promises;
 const path = require('path');
 const iconv = require('iconv-lite');
 const library = require('./library');
+const reading = require('./reading');
+const collections = require('./collections');
+const notes = require('./notes');
 const converter = require('./convert');
 const settingsStore = require('./settings');
 const music = require('./music');
@@ -74,6 +77,46 @@ function findBook(id) {
   return books.find(b => b.id === id) || null;
 }
 
+// bookId -> [shelfId]. Built once per request so a shelf listing does not walk
+// every shelf for every book (816 books x 60 shelves would be 49k scans).
+function shelfIndex() {
+  const map = new Map();
+  shelvesState.collections.forEach(shelf => {
+    shelf.bookIds.forEach(id => {
+      const list = map.get(id);
+      if (list) list.push(shelf.id);
+      else map.set(id, [shelf.id]);
+    });
+  });
+  return map;
+}
+
+function bookStatus(book) {
+  return reading.statusOf(book, progress);
+}
+
+// Fields the shelf and the detail sheet need, kept in one place so /api/books
+// and /api/book/:id never drift apart.
+function decorate(book, index) {
+  const counts = notes.countFor(notesState, book.id);
+  return {
+    ...book,
+    status: bookStatus(book),
+    progress: progress[book.id] || null,
+    noteCount: counts,
+    collections: (index && index.get(book.id)) || []
+  };
+}
+
+// A renamed file gets a new id, so shelf entries can point at books that no
+// longer exist. Pruning after every scan keeps the counts honest.
+function syncShelves() {
+  const valid = new Set(currentIndex.books.map(b => b.id));
+  const removed = collections.prune(shelvesState, valid);
+  if (removed) console.log(`[shelves] dropped ${removed} stale book id(s)`);
+  return removed;
+}
+
 // Resolve a book's real file. Each book remembers the folder it came from,
 // so adding folders in the UI just works without touching compose again.
 function bookFile(book) {
@@ -119,6 +162,10 @@ const MIME = {
 
 let currentIndex = { scannedAt: null, count: 0, books: [] };
 let progress = {};
+// Reading time per day, hand-built shelves, and highlights/bookmarks.
+let readingState = reading.emptyState();
+let shelvesState = collections.emptyState();
+let notesState = notes.emptyState();
 let scanning = false;
 // Books being re-scraped on their own. A single-book repair writes the index,
 // so it must not overlap with a full scan; the set doubles as the lock.
@@ -345,26 +392,43 @@ app.get('/api/stats', (req, res) => {
 });
 
 app.get('/api/books', (req, res) => {
-  const { sort = 'title', order = 'asc', q = '', format = '' } = req.query;
+  const { sort = 'title', order = 'asc', q = '', format = '', status = '', collection = '', limit = '' } = req.query;
   let books = currentIndex.books;
   if (format) books = books.filter(b => b.format === format);
+  if (collection) {
+    const shelf = shelvesState.collections.find(c => c.id === collection);
+    if (!shelf) return res.status(404).json({ error: '没有找到这个书单' });
+    const ids = new Set(shelf.bookIds);
+    books = books.filter(b => ids.has(b.id));
+  }
+  if (status) books = books.filter(b => bookStatus(b) === status);
   if (q) {
     const needle = String(q).toLowerCase();
     books = books.filter(b =>
       [b.title, b.author, b.path].some(v => String(v || '').toLowerCase().includes(needle))
     );
   }
-  books = library.sortBooks(books, sort, order).map(b => ({
-    ...b,
-    progress: progress[b.id] || null
-  }));
-  res.json({ count: books.length, books });
+  // "recent" sorts by when it was last opened, which lives in progress rather
+  // than in the book record, so it cannot be handled by library.sortBooks.
+  if (sort === 'recent') {
+    books = books.slice().sort((a, b) => {
+      const ta = (progress[a.id] || {}).updatedAt || '';
+      const tb = (progress[b.id] || {}).updatedAt || '';
+      return tb.localeCompare(ta);
+    });
+  } else {
+    books = library.sortBooks(books, sort, order);
+  }
+  const cap = Number(limit);
+  if (Number.isFinite(cap) && cap > 0) books = books.slice(0, cap);
+  const index = shelfIndex();
+  res.json({ count: books.length, books: books.map(b => decorate(b, index)) });
 });
 
 app.get('/api/book/:id', (req, res) => {
   const book = findBook(req.params.id);
   if (!book) return res.status(404).json({ error: '没有找到这本书' });
-  res.json({ ...book, progress: progress[book.id] || null });
+  res.json(decorate(book, shelfIndex()));
 });
 
 // Force one book through a complete re-scrape. This is the escape hatch for a
@@ -493,17 +557,206 @@ app.get('/api/book/:id/progress', (req, res) => {
   res.json(progress[req.params.id] || null);
 });
 
+/* ---------- reading ledger ---------- */
+// One writer for progress so status rules live in one place:
+//   percent >= 98%          -> 读完
+//   manually marked 读完     -> stays 读完 even when flipping back
+//   anything else that moved -> 在读
+function writeProgress(book, body) {
+  const prev = progress[book.id] || {};
+  const now = new Date().toISOString();
+  const percent = Math.max(0, Math.min(1, Number(body.percent) || 0));
+  const location = String(body.location || '').slice(0, 500);
+  let manual = prev.manual || '';
+  if (manual === 'unread' && (percent > 0 || location)) manual = '';
+
+  let status = 'reading';
+  if (percent >= 0.98) status = 'finished';
+  else if (manual === 'finished') status = 'finished';
+  else if (manual === 'unread' && percent <= 0 && !location) status = 'unread';
+
+  const rec = {
+    percent,
+    location,
+    status,
+    manual,
+    updatedAt: now,
+    openedAt: prev.openedAt || now
+  };
+  if (status === 'finished') rec.finishedAt = prev.finishedAt || now;
+  progress[book.id] = rec;
+  return rec;
+}
+
 app.post('/api/book/:id/progress', async (req, res) => {
   const book = findBook(req.params.id);
   if (!book) return res.status(404).json({ error: '没有找到这本书' });
-  const body = req.body || {};
-  progress[book.id] = {
-    percent: Math.max(0, Math.min(1, Number(body.percent) || 0)),
-    location: String(body.location || ''),
-    updatedAt: new Date().toISOString()
-  };
+  const rec = writeProgress(book, req.body || {});
   try { await library.saveProgress(cfg, progress); } catch (e) { /* best effort */ }
-  res.json(progress[book.id]);
+  res.json(rec);
+});
+
+// Manual override from the detail sheet: 未读 / 在读 / 读完.
+app.post('/api/book/:id/status', async (req, res) => {
+  const book = findBook(req.params.id);
+  if (!book) return res.status(404).json({ error: '没有找到这本书' });
+  const want = String((req.body || {}).status || '');
+  if (!['unread', 'reading', 'finished'].includes(want)) {
+    return res.status(400).json({ error: '状态只能是未读、在读或读完' });
+  }
+  const prev = progress[book.id] || {};
+  const now = new Date().toISOString();
+  if (want === 'unread') {
+    // Clearing the position is what "unread" means; the cover keeps its place
+    // on the shelf, the book just starts from the first page next time.
+    progress[book.id] = {
+      percent: 0, location: '', status: 'unread', manual: 'unread',
+      updatedAt: now, openedAt: prev.openedAt || null
+    };
+  } else if (want === 'finished') {
+    progress[book.id] = {
+      ...prev,
+      percent: 1,
+      status: 'finished',
+      manual: 'finished',
+      finishedAt: prev.finishedAt || now,
+      updatedAt: now,
+      openedAt: prev.openedAt || now
+    };
+  } else {
+    progress[book.id] = {
+      ...prev,
+      status: 'reading',
+      manual: 'reading',
+      updatedAt: now,
+      openedAt: prev.openedAt || now
+    };
+    delete progress[book.id].finishedAt;
+  }
+  try { await library.saveProgress(cfg, progress); } catch (e) { /* best effort */ }
+  res.json({ ok: true, book: decorate(book, shelfIndex()) });
+});
+
+// The reader sends a heartbeat every minute or so. Date is always the server's
+// today: a client with a wrong clock must not be able to backfill history.
+app.post('/api/reading/ping', async (req, res) => {
+  const body = req.body || {};
+  const book = findBook(String(body.bookId || ''));
+  if (!book) return res.status(404).json({ error: '没有找到这本书' });
+  const seconds = Number(body.seconds);
+  if (!Number.isFinite(seconds) || seconds <= 0) return res.json({ ok: true, ignored: true });
+  reading.addTime(readingState, book.id, seconds);
+  try { await reading.save(cfg, readingState); } catch (e) { /* best effort */ }
+  const today = readingState.days[reading.dayKey(new Date())] || { seconds: 0 };
+  res.json({ ok: true, today: today.seconds });
+});
+
+app.get('/api/reading/summary', (req, res) => {
+  res.json(reading.summary(readingState, { books: currentIndex.books, progress }));
+});
+
+/* ---------- hand-built shelves ---------- */
+app.get('/api/collections', (req, res) => {
+  res.json({
+    collections: shelvesState.collections.map(c => ({
+      id: c.id,
+      name: c.name,
+      count: c.bookIds.length,
+      bookIds: c.bookIds,
+      createdAt: c.createdAt
+    }))
+  });
+});
+
+app.post('/api/collections', async (req, res) => {
+  try {
+    const item = collections.create(shelvesState, (req.body || {}).name);
+    await collections.save(cfg, shelvesState);
+    res.json({ ok: true, collection: { ...item, count: 0 } });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.put('/api/collections/:id', async (req, res) => {
+  const body = req.body || {};
+  const item = shelvesState.collections.find(c => c.id === req.params.id);
+  if (!item) return res.status(404).json({ error: '没有找到这个书单' });
+  try {
+    if (body.name !== undefined) collections.rename(shelvesState, item.id, body.name);
+    // Adding/removing books and renaming in one call keeps the panel's save
+    // button to a single request.
+    if (body.add || body.remove) collections.members(shelvesState, item.id, body);
+    await collections.save(cfg, shelvesState);
+    const fresh = shelvesState.collections.find(c => c.id === item.id);
+    res.json({ ok: true, collection: { ...fresh, count: fresh.bookIds.length } });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.delete('/api/collections/:id', async (req, res) => {
+  if (!collections.remove(shelvesState, req.params.id)) {
+    return res.status(404).json({ error: '没有找到这个书单' });
+  }
+  await collections.save(cfg, shelvesState);
+  res.json({ ok: true });
+});
+
+/* ---------- highlights, notes, bookmarks ---------- */
+app.get('/api/book/:id/notes', (req, res) => {
+  const book = findBook(req.params.id);
+  if (!book) return res.status(404).json({ error: '没有找到这本书' });
+  res.json(notes.forBook(notesState, book.id));
+});
+
+app.post('/api/book/:id/notes', async (req, res) => {
+  const book = findBook(req.params.id);
+  if (!book) return res.status(404).json({ error: '没有找到这本书' });
+  const body = req.body || {};
+  const kind = body.kind === 'bookmark' ? 'bookmark' : 'highlight';
+  try {
+    const item = notes.add(notesState, book.id, kind, body);
+    await notes.save(cfg, notesState);
+    res.json({ ok: true, kind, item, count: notes.countFor(notesState, book.id) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.patch('/api/book/:id/notes/:noteId', async (req, res) => {
+  const book = findBook(req.params.id);
+  if (!book) return res.status(404).json({ error: '没有找到这本书' });
+  const item = notes.update(notesState, book.id, req.params.noteId, req.body || {});
+  if (!item) return res.status(404).json({ error: '没有找到这条笔记' });
+  await notes.save(cfg, notesState);
+  res.json({ ok: true, item });
+});
+
+app.delete('/api/book/:id/notes/:noteId', async (req, res) => {
+  const book = findBook(req.params.id);
+  if (!book) return res.status(404).json({ error: '没有找到这本书' });
+  if (!notes.remove(notesState, book.id, req.params.noteId)) {
+    return res.status(404).json({ error: '没有找到这条笔记' });
+  }
+  await notes.save(cfg, notesState);
+  res.json({ ok: true, count: notes.countFor(notesState, book.id) });
+});
+
+// Markdown keeps the quotes and notes readable in any editor, and is what
+// Obsidian / 备忘录 import without asking questions.
+app.get('/api/book/:id/notes/export', (req, res) => {
+  const book = findBook(req.params.id);
+  if (!book) return res.status(404).end();
+  const record = notes.forBook(notesState, book.id);
+  if (!record.highlights.length && !record.bookmarks.length) {
+    return res.status(404).json({ error: '这本书还没有笔记' });
+  }
+  const body = notes.toMarkdown(book, record);
+  const name = (book.title || '未命名').replace(/[\\/:*?"<>|]/g, '_') + '-笔记.md';
+  res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+  res.setHeader('Content-Disposition', "attachment; filename*=UTF-8''" + encodeURIComponent(name));
+  res.end(body);
 });
 
 // Check a NAS folder before the user adds it in settings.
@@ -534,6 +787,8 @@ async function runScan(reason) {
     const folders = settings.folders && settings.folders.length ? settings.folders : [cfg.booksDir];
     currentIndex = await library.scan(cfg, folders);
     lastScanError = '';
+    // A renamed or deleted file leaves stale ids behind in the shelves.
+    if (syncShelves()) await collections.save(cfg, shelvesState);
     const st = currentIndex.stats || {};
     console.log(`[scan/${reason}] ${currentIndex.count} 册 · 复用 ${st.reused || 0} · 新刮 ${st.scraped || 0} · ${Date.now() - started}ms`);
     return {
@@ -595,6 +850,9 @@ async function start() {
   settings = settingsStore.applyEnv(await settingsStore.load(cfg), process.env);
   currentIndex = await library.loadIndex(cfg);
   progress = await library.loadProgress(cfg);
+  readingState = await reading.load(cfg);
+  shelvesState = await collections.load(cfg);
+  notesState = await notes.load(cfg);
 
   applyScanSettings();
 

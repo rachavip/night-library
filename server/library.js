@@ -720,7 +720,13 @@ function scrapeTxt(file) {
     if (iconv.encodingExists('utf8') && isValidUtf8(buf)) text = buf.toString('utf8');
     else text = iconv.decode(buf, 'gb18030');
     const firstLine = text.split(/\r?\n/).map(x => x.trim()).find(Boolean) || '';
-    return { title: firstLine.length <= 60 ? firstLine : '' };
+    // Only a line that reads like a heading counts as the title: short and
+    // free of sentence punctuation. Plenty of novels open straight into a
+    // paragraph, and treating that paragraph as the book name was how a whole
+    // shelf ended up named after its first sentence.
+    const looksLikeTitle = firstLine.length > 0 && firstLine.length <= 24 &&
+      !/[，。！？；：、“”‘’「」『』《》,.!?;:]/.test(firstLine);
+    return { title: looksLikeTitle ? firstLine : '' };
   }).catch(() => ({}));
 }
 
