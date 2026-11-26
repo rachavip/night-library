@@ -327,6 +327,7 @@ app.get('/api/stats', (req, res) => {
   res.json({
     count: currentIndex.books.length,
     scannedAt: currentIndex.scannedAt,
+    lastScan: currentIndex.stats || null,
     formats,
     calibre: converter.isAvailable(),
     booksDir: cfg.booksDir,
@@ -465,8 +466,15 @@ async function runScan(reason) {
     const folders = settings.folders && settings.folders.length ? settings.folders : [cfg.booksDir];
     currentIndex = await library.scan(cfg, folders);
     lastScanError = '';
-    console.log(`[scan/${reason}] ${currentIndex.count} 册 · ${Date.now() - started}ms`);
-    return { ok: true, count: currentIndex.count, scannedAt: currentIndex.scannedAt, folders: currentIndex.folders };
+    const st = currentIndex.stats || {};
+    console.log(`[scan/${reason}] ${currentIndex.count} 册 · 复用 ${st.reused || 0} · 新刮 ${st.scraped || 0} · ${Date.now() - started}ms`);
+    return {
+      ok: true,
+      count: currentIndex.count,
+      scannedAt: currentIndex.scannedAt,
+      folders: currentIndex.folders,
+      stats: st
+    };
   } catch (e) {
     lastScanError = String(e.message || e);
     console.warn(`[scan/${reason}] failed: ${lastScanError}`);
@@ -480,7 +488,7 @@ app.post('/api/rescan', async (req, res) => {
   const result = await runScan('manual');
   if (result.skipped) return res.status(409).json({ error: result.error });
   if (!result.ok) return res.status(500).json({ error: result.error });
-  res.json({ ok: true, count: result.count, scannedAt: result.scannedAt, folders: result.folders });
+  res.json({ ok: true, count: result.count, scannedAt: result.scannedAt, folders: result.folders, stats: result.stats });
 });
 
 app.use(express.static(path.join(ROOT, 'public'), { index: false }));

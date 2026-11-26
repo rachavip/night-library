@@ -157,8 +157,27 @@ function looksGarbled(s) {
   return Boolean(s) && (/^þÿ/.test(s) || /[\u0000-\u0008\u000e-\u001f]/.test(s));
 }
 
+/* Read only the head and tail of a PDF. The Info dictionary lives either near
+ * the start or in the trailer, so slurping a 160MB file whole (as we used to)
+ * was pure IO waste and could stall the whole scan. */
+async function readPdfEdges(file) {
+  const fh = await fsp.open(file, 'r');
+  try {
+    const { size } = await fh.stat();
+    const headLen = Math.min(size, 256 * 1024);
+    const tailLen = Math.min(size - headLen, 2 * 1024 * 1024);
+    const head = Buffer.alloc(headLen);
+    if (headLen) await fh.read(head, 0, headLen, 0);
+    const tail = Buffer.alloc(tailLen);
+    if (tailLen) await fh.read(tail, 0, tailLen, size - tailLen);
+    return Buffer.concat([head, tail]);
+  } finally {
+    await fh.close();
+  }
+}
+
 function scrapePdf(file) {
-  return fsp.readFile(file).then(buf => {
+  return readPdfEdges(file).then(buf => {
     const s = buf.toString('latin1');
     const get = key => {
       let m = s.match(new RegExp('/' + key + '\\s*\\((([^()\\\\]|\\\\.){0,300})\\)'));
@@ -318,7 +337,34 @@ async function mapLimit(items, limit, worker) {
   return out;
 }
 
-async function buildBook(entry, cfg, folder) {
+async function statOf(file) {
+  try { return await fsp.stat(file); } catch (e) { return null; }
+}
+
+/* One readdir of the cover folder instead of an existsSync per book. On a
+ * 500-book shelf those synchronous calls blocked the event loop during the
+ * "nothing changed" scan, which is exactly the case that must stay instant.
+ * A null result means "unknown", and unknown never counts as a change. */
+async function listCovers(coverDir) {
+  try { return new Set(await fsp.readdir(coverDir)); }
+  catch (e) { return null; }
+}
+
+/* True when a previously scraped record can be reused as-is: the file has the
+ * same size and mtime, the stored title is not mojibake, and its cover is
+ * still on disk. Anything questionable falls through to a real scrape, so a
+ * better extractor still repairs books that were indexed badly. */
+function canReuse(previous, stat, coverSet) {
+  if (!previous || !stat) return false;
+  if (!previous.title || looksGarbled(previous.title)) return false;
+  if (previous.author && looksGarbled(previous.author)) return false;
+  if (previous.size !== stat.size) return false;
+  if (previous.addedAt !== stat.mtime.toISOString()) return false;
+  if (previous.coverFile && coverSet && !coverSet.has(previous.coverFile)) return false;
+  return true;
+}
+
+async function buildBook(entry, cfg, folder, previous, preStat, coverSet) {
   const { full, rel } = entry;
   // Include the folder in the hash so the same filename in two folders
   // stays two distinct books.
@@ -326,6 +372,16 @@ async function buildBook(entry, cfg, folder) {
   const ext = path.extname(rel).slice(1).toLowerCase();
   const base = path.basename(rel, path.extname(rel));
   const guessed = guessFromFilename(base);
+
+  // The probe pass already stat'ed the file; only pay for it again when this
+  // function is called on its own.
+  const stat = preStat !== undefined ? preStat : await statOf(full);
+
+  // Incremental rescan: an unchanged file never reaches a parser or Calibre.
+  if (canReuse(previous, stat, coverSet)) {
+    return { ...previous, id, format: ext, path: rel, folder };
+  }
+
   let scraped = {};
   try {
     if (ext === 'epub') {
@@ -352,8 +408,6 @@ async function buildBook(entry, cfg, folder) {
   } catch (e) {
     scraped = {};
   }
-  let stat;
-  try { stat = await fsp.stat(full); } catch (e) { stat = null; }
   return {
     id,
     title: clean(scraped.title) || guessed.title,
@@ -370,6 +424,7 @@ async function buildBook(entry, cfg, folder) {
 }
 
 async function scan(cfg, folders) {
+  const startedAt = Date.now();
   await fsp.mkdir(cfg.dataDir, { recursive: true });
   await fsp.mkdir(cfg.coverDir, { recursive: true });
   await fsp.mkdir(cfg.convertDir, { recursive: true });
@@ -378,6 +433,17 @@ async function scan(cfg, folders) {
   const seen = new Set();
   const books = [];
   const folderStats = [];
+
+  // Index the previously scanned books by id so unchanged files can skip
+  // scraping entirely.
+  const prevIndex = await loadIndex(cfg);
+  const prevBooks = prevIndex.books || [];
+  const previous = new Map();
+  prevBooks.forEach(b => { if (b && b.id) previous.set(b.id, b); });
+  const coverSet = await listCovers(cfg.coverDir);
+
+  let reused = 0;
+  let added = 0;
 
   for (const folder of targets) {
     let files = [];
@@ -393,21 +459,74 @@ async function scan(cfg, folders) {
       folderStats.push({ folder, ok: false, count: 0, error: '无法访问：' + e.message });
       continue;
     }
-    const found = await mapLimit(files, 4, entry => buildBook(entry, cfg, folder));
+    if (!files.length) continue;
+
+    // Pass 1 — one stat per file, nothing opened and nothing parsed. The
+    // concurrency is high because this is pure metadata IO, and it is the only
+    // work an unchanged shelf has to do.
+    const probed = await mapLimit(files, 24, async entry => {
+      const id = hashId(folder + '|' + entry.rel);
+      const stat = await statOf(entry.full);
+      return { entry, id, stat };
+    });
+
+    // Pass 2 — unchanged books are answered straight from the old index; only
+    // the new or modified ones reach a parser or Calibre, at a lower
+    // concurrency so ebook-meta processes do not pile up on a small NAS.
+    const todo = [];
+    const found = new Array(probed.length);
+    probed.forEach((p, i) => {
+      const prev = previous.get(p.id);
+      if (canReuse(prev, p.stat, coverSet)) {
+        reused++;
+        found[i] = {
+          ...prev,
+          id: p.id,
+          format: path.extname(p.entry.rel).slice(1).toLowerCase(),
+          path: p.entry.rel,
+          folder
+        };
+      } else {
+        if (!prev) added++;
+        todo.push({ index: i, entry: p.entry, id: p.id, stat: p.stat });
+      }
+    });
+
+    const fresh = await mapLimit(todo, 4, p =>
+      buildBook(p.entry, cfg, folder, previous.get(p.id), p.stat, coverSet)
+    );
+    todo.forEach((p, k) => { found[p.index] = fresh[k]; });
+
     for (const book of found) {
-      if (seen.has(book.id)) continue;
+      if (!book || seen.has(book.id)) continue;
       seen.add(book.id);
       books.push(book);
     }
   }
 
+  const removed = prevBooks.filter(b => b && b.id && !seen.has(b.id)).length;
+  const changed = added > 0 || removed > 0 || reused < books.length;
+  const stats = {
+    total: books.length,
+    reused,
+    scraped: books.length - reused,
+    added,
+    removed,
+    changed,
+    durationMs: Date.now() - startedAt
+  };
   const index = {
     scannedAt: new Date().toISOString(),
     count: books.length,
     folders: folderStats,
+    stats,
     books
   };
-  await fsp.writeFile(path.join(cfg.dataDir, 'library.json'), JSON.stringify(index, null, 2), 'utf8');
+  // Nothing changed means there is nothing new to persist: keep the NAS disk
+  // quiet and let the in-memory scannedAt tell clients the scan did run.
+  if (changed || !prevIndex.scannedAt) {
+    await fsp.writeFile(path.join(cfg.dataDir, 'library.json'), JSON.stringify(index, null, 2), 'utf8');
+  }
   return index;
 }
 
