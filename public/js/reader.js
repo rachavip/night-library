@@ -11,7 +11,13 @@
   var nextBtn = document.getElementById('next');
   var themeBtn = document.getElementById('theme-btn');
   var fontLabel = document.getElementById('font-size');
+  // The − 18 + control only rewrites font-size on reflowable text. A PDF is
+  // rendered page by page, so the buttons do nothing there and the zoom select
+  // is the right control instead.
+  var fontGroup = document.querySelector('.font-group');
   var errorBox = document.getElementById('reader-error');
+  var busyBox = document.getElementById('reader-busy');
+  var busyText = document.getElementById('reader-busy-text');
   var zoomGroup = document.getElementById('zoom-group');
   var zoomSelect = document.getElementById('zoom-mode');
 
@@ -26,7 +32,17 @@
       .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
+  // A converted MOBI / AZW3 can take tens of seconds on the NAS. Without a
+  // message the reader looks broken, so every slow step says what it is doing.
+  function setBusy(message) {
+    if (!busyBox) return;
+    if (!message) { busyBox.hidden = true; return; }
+    busyText.textContent = message;
+    busyBox.hidden = false;
+  }
+
   function showError(message) {
+    setBusy('');
     viewer.hidden = true;
     document.querySelector('.reader-bar').hidden = true;
     document.querySelector('.reader-foot').hidden = true;
@@ -237,6 +253,7 @@
 
     zoomSelect.value = zoomMode;
     zoomGroup.hidden = false;
+    fontGroup.hidden = true;
 
     var startPage = Number(saved && saved.location) || 1;
     await engine.goto(startPage);
@@ -244,10 +261,32 @@
 
   /* ---------------- EPUB / MOBI / AZW3 (converted to EPUB) ---------------- */
   async function initEpub() {
-    var book = ePub('/api/book/' + id + '/read');
+    fontGroup.hidden = false;
+    setBusy('正在打开…');
+    // epub.js picks the opening strategy from the URL extension. Ours ended in
+    // /read with none, so it fell back to "unpacked directory" and requested
+    // META-INF/container.xml over HTTP - a guaranteed 404. The .epub suffix and
+    // openAs both say "this URL is a zipped EPUB".
+    var book = ePub('/api/book/' + id + '/read.epub', { openAs: 'epub' });
     var rendition = book.renderTo('viewer', { width: '100%', height: '100%', spread: 'none' });
-    await book.ready;
-    await rendition.display(saved && saved.location ? saved.location : undefined);
+    // epub.js swallows its own open rejection and only emits openFailed, which
+    // would leave `book.ready` pending forever. Race the two so a broken file
+    // reports an error instead of sitting on "正在打开…".
+    var failed = new Promise(function (resolve, reject) {
+      book.on('openFailed', function () { reject(new Error('openFailed')); });
+    });
+    failed.catch(function () { /* handled by the race below */ });
+    try {
+      await Promise.race([book.ready, failed]);
+    } catch (e) {
+      throw new Error('这个文件打不开：它可能已损坏、带 DRM 加密，或者不是标准的 EPUB 文件。');
+    }
+    try {
+      await rendition.display(saved && saved.location ? saved.location : undefined);
+    } catch (e) {
+      // A stale reading position must never stop the book from opening.
+      await rendition.display();
+    }
 
     function currentIndex() {
       var loc = rendition.currentLocation();
@@ -279,33 +318,48 @@
       },
       applyTheme: function (selectedTheme, size) {
         var night = selectedTheme === 'night';
-        rendition.themes.register('night-library', {
-          'body': {
-            'background': night ? '#0B121C !important' : '#F5F0E4 !important',
-            'color': night ? '#EDE6D8 !important' : '#2B2A25 !important',
-            'font-family': '"Noto Serif SC", "Songti SC", "SimSun", Georgia, serif !important',
-            'line-height': '1.95 !important',
-            'padding': '0 8% !important'
-          },
-          'p': { 'text-indent': '2em !important', 'margin': '0 0 .8em !important' },
-          'a': { 'color': night ? '#E9A23B !important' : '#8A5A1F !important' }
-        });
-        rendition.themes.select('night-library');
-        rendition.themes.fontSize(size + 'px');
-        var contents = rendition.getContents ? rendition.getContents() : [];
+        // epub.js 0.3.93 has no Contents.addCss. Calling it threw on every
+        // render, and because the theme is applied once more during boot the
+        // whole page ended on "打不开" even though the text had rendered.
+        // Writing one <style> node per section document is plain DOM and does
+        // not depend on whichever helper the bundled epub.js happens to ship.
+        var css = [
+          'html, body {',
+          '  background: ' + (night ? '#0B121C' : '#F5F0E4') + ' !important;',
+          '  color: ' + (night ? '#EDE6D8' : '#2B2A25') + ' !important;',
+          '  font-family: "Noto Serif SC", "Songti SC", "SimSun", Georgia, serif !important;',
+          '  font-size: ' + size + 'px !important;',
+          '  line-height: 1.95 !important;',
+          '}',
+          'body { padding: 0 6% !important; margin: 0 !important; }',
+          'p { text-indent: 2em !important; margin: 0 0 .8em !important; }',
+          'a { color: ' + (night ? '#E9A23B' : '#8A5A1F') + ' !important; }',
+          'img { max-width: 100% !important; height: auto !important; }'
+        ].join('\n');
+
+        var contents = typeof rendition.getContents === 'function' ? rendition.getContents() : [];
         contents.forEach(function (c) {
-          c.addCss('html,body{background:' + (night ? '#0B121C' : '#F5F0E4') + '!important;color:' +
-            (night ? '#EDE6D8' : '#2B2A25') + '!important;font-size:' + size + 'px!important;}');
+          var doc = c && c.document;
+          if (!doc || !doc.head) return;
+          var style = doc.getElementById('night-library-theme');
+          if (!style) {
+            style = doc.createElement('style');
+            style.id = 'night-library-theme';
+            doc.head.appendChild(style);
+          }
+          style.textContent = css;
         });
       }
     };
     rendition.on('rendered', function () { engine.applyTheme(theme, fontSize); });
     rendition.on('locationChanged', syncControls);
     syncControls();
+    setBusy('');
   }
 
   /* ---------------- TXT ---------------- */
   async function initTxt() {
+    fontGroup.hidden = false;
     var res = await fetch('/api/book/' + id + '/text');
     if (!res.ok) throw new Error('文本读取失败');
     var text = await res.text();
@@ -443,6 +497,12 @@
       titleEl.textContent = book.title || '未命名';
       authorEl.textContent = book.author || '佚名';
       saved = book.progress;
+      if (book.format === 'mobi' || book.format === 'azw3') {
+        // Calibre conversion runs on the NAS and is not instant: ask for it
+        // first so a failure surfaces as text instead of a silent blank page.
+        setBusy('第一次打开要先把 ' + book.format.toUpperCase() + ' 转成可翻页的版本，请稍等…');
+        await api('/api/book/' + encodeURIComponent(id) + '/prepare');
+      }
       if (book.format === 'pdf') await initPdf();
       else if (book.format === 'txt') await initTxt();
       else await initEpub();
