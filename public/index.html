@@ -12,7 +12,17 @@
   <div class="backdrop" id="backdrop" aria-hidden="true"></div>
 
   <header class="topbar">
-    <div class="brand"><span class="brand-dot" aria-hidden="true"></span><span id="brand-name">夜读</span><span class="brand-sub" id="brand-sub">我的书房</span></div>
+    <div class="brand"><span class="brand-dot" aria-hidden="true"></span><span id="brand-name">夜读</span><span class="brand-sub" id="brand-sub">我的书房</span><button type="button" class="version-badge" id="version-badge" title="版本与更新" aria-label="查看版本与更新" aria-expanded="false">第 … 版</button>
+      <div class="version-pop" id="version-pop" hidden>
+        <div class="version-pop-head"><strong id="version-current">版本</strong><button type="button" class="icon-btn" id="version-close" aria-label="关闭版本信息">×</button></div>
+        <p class="version-date" id="version-date"></p>
+        <ul class="version-notes" id="version-notes"></ul>
+        <div class="version-check">
+          <button type="button" class="ghost-btn" id="version-check-btn">检查更新</button>
+          <span class="version-result" id="version-result"></span>
+        </div>
+      </div>
+    </div>
     <div class="topbar-actions">
       <label class="search">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke-width="2" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 21 21"/></svg>
@@ -76,6 +86,18 @@
           <button type="button" class="ghost-btn" id="folder-add-btn">添加</button>
         </div>
         <div class="folder-result" id="folder-result"></div>
+      </section>
+
+      <section class="setting-group">
+        <div class="group-head"><h3>自动刮削</h3></div>
+        <p class="hint">新书入库后自动更新书架；随时可用顶栏「刮削」手动触发。</p>
+        <label class="check-field">
+          <input id="scan-on-start" type="checkbox">
+          <span>每次启动时刮削一次</span>
+        </label>
+        <label class="field">每隔多少分钟刮削<input id="scan-interval" type="number" min="0" max="10080" step="1" inputmode="numeric" placeholder="60"></label>
+        <p class="hint" id="scan-interval-hint">填 0 关闭定时，只在启动和手动点击时刮削。</p>
+        <p class="hint env-hint" id="scan-env-hint" hidden>当前调度由 docker-compose.yml 指定，优先级高于此处。要改请改 compose 后执行 docker compose up -d。</p>
       </section>
 
       <section class="setting-group">
@@ -171,5 +193,6 @@
   <script src="/js/library.js"></script>
   <script src="/js/music.js"></script>
   <script src="/js/settings.js"></script>
+  <script src="/js/version.js"></script>
 </body>
 </html>
