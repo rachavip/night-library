@@ -13,6 +13,7 @@
   var toastFn = window.nightToast || function () {};
   var folders = [];
   var pendingMusicMode = 'embed';
+  var pendingActiveId = '';
 
   function el(id) { return document.getElementById(id); }
 
@@ -47,9 +48,83 @@
     });
     el('music-subsonic-fields').hidden = mode !== 'subsonic';
     el('music-hint').textContent = mode === 'embed'
-      ? '填入 AnyListen 的访问地址，点顶栏 ♫ 即可打开听歌；收起后面板会继续播放。'
+      ? '给服务填地址，点顶栏 ♫ 打开播放器；在播放器左上角切换服务，收起后继续播放。'
       : '填写 Navidrome 等 Subsonic 服务的地址与账号，书架底部会出现轻量播放条。';
     el('music-test-result').textContent = '';
+  }
+
+  function renderMusicServices() {
+    var box = el('music-services');
+    if (!box) return;
+    box.innerHTML = '';
+    var list = (settings && settings.music && settings.music.services) || [];
+    list.forEach(function (svc) {
+      var row = document.createElement('div');
+      row.className = 'music-service';
+      row.dataset.id = svc.id;
+
+      var head = document.createElement('div');
+      head.className = 'music-service-head';
+      var name = document.createElement('span');
+      name.className = 'music-service-name';
+      name.textContent = svc.name || svc.id;
+      head.appendChild(name);
+      if (svc.id === pendingActiveId) {
+        var cur = document.createElement('span');
+        cur.className = 'music-service-current';
+        cur.textContent = '当前';
+        head.appendChild(cur);
+      } else {
+        var pick = document.createElement('button');
+        pick.type = 'button';
+        pick.className = 'text-btn';
+        pick.textContent = '设为当前';
+        pick.addEventListener('click', function () {
+          pendingActiveId = svc.id;
+          renderMusicServices();
+          el('music-test-result').textContent = '';
+        });
+        head.appendChild(pick);
+      }
+      row.appendChild(head);
+
+      var urlLabel = document.createElement('label');
+      urlLabel.className = 'field';
+      urlLabel.appendChild(document.createTextNode('地址'));
+      var urlInput = document.createElement('input');
+      urlInput.type = 'text';
+      urlInput.className = 'music-service-url';
+      urlInput.value = svc.url || '';
+      urlInput.placeholder = 'http://192.168.0.111:9500';
+      urlLabel.appendChild(urlInput);
+      row.appendChild(urlLabel);
+
+      var loginLabel = document.createElement('label');
+      loginLabel.className = 'field';
+      loginLabel.appendChild(document.createTextNode('登录页地址（可选）'));
+      var loginInput = document.createElement('input');
+      loginInput.type = 'text';
+      loginInput.className = 'music-service-login';
+      loginInput.value = svc.loginUrl || '';
+      loginInput.placeholder = '留空则用上面的地址';
+      loginLabel.appendChild(loginInput);
+      row.appendChild(loginLabel);
+
+      box.appendChild(row);
+    });
+  }
+
+  function musicServiceRows() {
+    return Array.prototype.slice.call(document.querySelectorAll('.music-service'));
+  }
+
+  function currentServiceRow() {
+    return musicServiceRows().find(function (row) { return row.dataset.id === pendingActiveId; }) || null;
+  }
+
+  function currentServiceUrl() {
+    var row = currentServiceRow();
+    return row ? row.querySelector('.music-service-url').value.trim() : '';
   }
 
   function renderFolders() {
@@ -96,7 +171,10 @@
     el('bg-blur').value = settings.background.blur || 0;
     el('bg-blur-out').textContent = el('bg-blur').value + 'px';
     applyMusicMode((settings.music && settings.music.mode) || 'embed');
-    el('music-url').value = settings.music.url || '';
+    var envHint = el('music-env-hint');
+    if (envHint) envHint.hidden = !settings.music.urlFromEnv;
+    pendingActiveId = (settings.music && settings.music.activeId) || '';
+    renderMusicServices();
     el('music-user').value = settings.music.user || '';
     el('music-pass').value = settings.music.password || '';
     applyBackground();
@@ -130,7 +208,16 @@
       music: {
         mode: pendingMusicMode,
         enabled: settings.music.enabled,
-        url: el('music-url').value.trim(),
+        url: currentServiceUrl(),
+        activeId: pendingActiveId,
+        services: musicServiceRows().map(function (row) {
+          return {
+            id: row.dataset.id,
+            name: row.querySelector('.music-service-name').textContent,
+            url: row.querySelector('.music-service-url').value.trim(),
+            loginUrl: row.querySelector('.music-service-login').value.trim()
+          };
+        }),
         user: el('music-user').value.trim(),
         password: el('music-pass').value,
         volume: settings.music.volume
@@ -290,8 +377,10 @@
 
   el('music-test').addEventListener('click', async function () {
     var out = el('music-test-result');
-    var url = el('music-url').value.trim();
-    if (!url) { out.textContent = '请先填写地址'; out.className = 'test-result'; return; }
+    var hint = el('music-test-hint');
+    var url = currentServiceUrl();
+    hint.hidden = true;
+    if (!url) { out.textContent = '请先给当前服务填写地址'; out.className = 'test-result'; return; }
     out.textContent = '正在测试…';
     out.className = 'test-result';
     try {
@@ -308,13 +397,20 @@
       var data = await res.json();
       if (data.ok) {
         var label = pendingMusicMode === 'embed'
-          ? ('网页播放器 · ' + (data.title || data.url || '已连接'))
+          ? ((data.title || data.url || '已连接') +
+             (data.embeddable === false ? ' · 嵌入受限' : '') +
+             (data.loginRequired ? ' · 需要登录' : ''))
           : ('Subsonic · ' + (data.type || '已连接'));
         out.textContent = '连接成功 · ' + label;
         out.className = 'test-result ok';
-      } else { out.textContent = data.error || '连接失败'; }
+        if (data.hint) { hint.textContent = data.hint; hint.hidden = false; }
+      } else {
+        out.textContent = data.error || '连接失败';
+        out.className = 'test-result';
+      }
     } catch (e) {
       out.textContent = '测试失败：' + e.message;
+      out.className = 'test-result';
     }
   });
 
@@ -322,7 +418,9 @@
   fetch('/api/settings').then(function (r) { return r.json(); }).then(applyAll).catch(function () {
     applyAll({ systemName: '夜读', subtitle: '我的书房', theme: 'night',
       background: { enabled: false, data: '', dim: 0.55, blur: 0 },
-      music: { mode: 'embed', enabled: false, url: 'http://192.168.0.111:9500', user: '', password: '', volume: 0.8 } });
+      music: { mode: 'embed', enabled: false, url: 'http://192.168.0.111:9500', user: '', password: '', volume: 0.8,
+        activeId: 'anylisten',
+        services: [{ id: 'anylisten', name: 'AnyListen', url: 'http://192.168.0.111:9500', loginUrl: '' }] } });
   });
 
   window.nightSettings = { applyAll: applyAll, current: function () { return settings; } };

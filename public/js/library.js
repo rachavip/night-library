@@ -9,6 +9,9 @@
   var rescanBtn = document.getElementById('rescan');
   var formats = {};
   var toastTimer;
+  var lastScannedAt = null;
+  var lastCount = -1;
+  var lastScanning = null;
 
   function esc(s) {
     return String(s == null ? '' : s)
@@ -92,21 +95,56 @@
     });
   }
 
+  function clock(iso) {
+    return iso ? new Date(iso).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '';
+  }
+
   async function renderStats() {
     try {
       var stats = await api('/api/stats');
       formats = stats.formats || {};
+      lastScannedAt = stats.scannedAt;
+      lastCount = stats.count;
+      lastScanning = Boolean(stats.scanning);
       document.getElementById('stat-count').textContent = stats.count;
       var when = stats.scannedAt ? new Date(stats.scannedAt).toLocaleString('zh-CN', {
         month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit'
       }) : '从未';
-      document.getElementById('stat-meta').textContent =
-        '上次整理 ' + when + (stats.calibre ? '' : ' · 未检测到 Calibre，MOBI/AZW3 无法在线阅读');
+      var bits = ['上次整理 ' + when];
+      if (stats.scanning) bits.push('正在整理…');
+      if (stats.autoScanMinutes) {
+        bits.push('每 ' + stats.autoScanMinutes + ' 分钟自动整理');
+        if (stats.nextScanAt && !stats.scanning) bits.push('下次 ' + clock(stats.nextScanAt));
+      } else if (stats.scanOnStart) {
+        bits.push('启动时自动整理');
+      }
+      if (!stats.calibre) bits.push('未检测到 Calibre，MOBI/AZW3 无法在线阅读');
+      document.getElementById('stat-meta').textContent = bits.join(' · ');
       renderFilters();
     } catch (e) {
       document.getElementById('stat-meta').textContent = '书房暂时无法访问';
       toast(e.message);
     }
+  }
+
+  // Background scans (startup / timer) change the shelf without a page reload.
+  // Poll the cheap stats endpoint and refresh only when a new scan finished.
+  async function pollStats() {
+    if (document.hidden) return;
+    try {
+      var stats = await api('/api/stats');
+      var scanning = Boolean(stats.scanning);
+      if (scanning !== lastScanning) {
+        await renderStats();
+        return;
+      }
+      if (lastScannedAt && stats.scannedAt && stats.scannedAt !== lastScannedAt) {
+        var added = stats.count - lastCount;
+        toast(added > 0 ? ('书房已更新，新增 ' + added + ' 册') : '书房已更新');
+        await renderStats();
+        await renderBooks();
+      }
+    } catch (e) { /* stay quiet: a transient poll failure is not user-facing */ }
   }
 
   async function rescan() {
@@ -158,4 +196,5 @@
 
   renderStats();
   renderBooks();
+  setInterval(pollStats, 10000);
 })();
