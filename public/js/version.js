@@ -15,8 +15,8 @@
 
   function render(v) {
     current = v || {};
-    badge.textContent = '第 ' + (current.version || '0.0') + ' 版';
-    el('version-current').textContent = '当前运行 · 第 ' + (current.version || '0.0') + ' 版';
+    badge.textContent = '当前版本：' + (current.version || '0.0');
+    el('version-current').textContent = '当前版本：' + (current.version || '0.0');
     el('version-date').textContent = current.date ? '更新于 ' + current.date : '';
     var list = el('version-notes');
     list.innerHTML = '';
@@ -36,7 +36,7 @@
     var hasUpdate = Boolean(data && data.ok && data.state === 'remote-newer');
     badge.classList.toggle('has-update', hasUpdate);
     badge.setAttribute('title', hasUpdate
-      ? 'GitHub 上是第 ' + data.remote.version + ' 版，点此查看'
+      ? 'GitHub 上是当前版本：' + data.remote.version + '，点此查看'
       : '版本与更新');
     return hasUpdate;
   }
@@ -80,12 +80,12 @@
       return [data.error || '检查失败，请稍后再试', 'is-error'];
     }
     if (data.state === 'same') {
-      return ['已是最新版 · 第 ' + data.local.version + ' 版', 'is-amber'];
+      return ['已是最新版 · 当前版本：' + data.local.version, 'is-amber'];
     }
     if (data.state === 'remote-newer') {
-      return ['GitHub 上是第 ' + data.remote.version + ' 版，重新上传文件并等构建完成后更新镜像', 'is-amber'];
+      return ['GitHub 上是当前版本：' + data.remote.version + '，重新上传文件并等构建完成后更新镜像', 'is-amber'];
     }
-    return ['本机第 ' + data.local.version + ' 版比 GitHub 上的第 ' + data.remote.version + ' 版新，改动可能还没上传', 'is-amber'];
+    return ['本机当前版本：' + data.local.version + '，比 GitHub 上的 ' + data.remote.version + ' 新，改动可能还没上传', 'is-amber'];
   }
 
   // Manual check always hits the network and refreshes the cache.
