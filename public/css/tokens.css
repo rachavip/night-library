@@ -1,0 +1,64 @@
+/* 夜读书房 — design tokens. Deep ink blue, warm paper light, one amber lamp. */
+:root {
+  --night-900: #0B121C;
+  --night-800: #111C29;
+  --night-700: #16283A;
+  --line: #2A3A4C;
+  --line-soft: rgba(42, 58, 76, 0.55);
+  --paper: #EDE6D8;
+  --dim: #93A0B0;
+  --amber: #E9A23B;
+  --amber-soft: rgba(233, 162, 59, 0.13);
+
+  /* Paper reading surface — only inside the reader. */
+  --sheet: #F5F0E4;
+  --sheet-ink: #2B2A25;
+  --sheet-dim: #6F6A5C;
+
+  --serif: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", Georgia, serif;
+  --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+/* ---- themes. Applied via <html data-app-theme="..."> on the library UI ---- */
+:root[data-app-theme="paper"] {
+  --night-900: #EFE9DC;
+  --night-800: #F6F1E6;
+  --night-700: #E4DCCB;
+  --line: #C9BDA6;
+  --line-soft: rgba(120, 106, 80, 0.28);
+  --paper: #2B2A25;
+  --dim: #736B5C;
+  --amber: #8A5A1F;
+  --amber-soft: rgba(138, 90, 31, 0.12);
+}
+:root[data-app-theme="ink"] {
+  --night-900: #07090B;
+  --night-800: #111417;
+  --night-700: #1B2024;
+  --line: #2B3238;
+  --line-soft: rgba(43, 50, 56, 0.6);
+  --paper: #E4E4E2;
+  --dim: #868E95;
+  --amber: #D9C08A;
+  --amber-soft: rgba(217, 192, 138, 0.12);
+}
+:root[data-app-theme="tide"] {
+  --night-900: #071A1B;
+  --night-800: #0D2527;
+  --night-700: #123236;
+  --line: #245054;
+  --line-soft: rgba(36, 80, 84, 0.55);
+  --paper: #E1EFEA;
+  --dim: #8FB0AA;
+  --amber: #6ED0B6;
+  --amber-soft: rgba(110, 208, 182, 0.13);
+}
+
+/* Background image scrim, tuned per theme so type stays readable. */
+:root { --scrim: rgba(11, 18, 28, 0.62); }
+:root[data-app-theme="paper"] { --scrim: rgba(239, 233, 220, 0.70); }
+:root[data-app-theme="ink"] { --scrim: rgba(7, 9, 11, 0.68); }
+:root[data-app-theme="tide"] { --scrim: rgba(7, 26, 27, 0.66); }
