@@ -57,7 +57,7 @@ const DESC_PAREN = new RegExp(
 const YEAR_PAREN = /^(1[89]|20)\d{2}([.\-/年]\d{1,2})?([.\-/月]\d{1,2})?日?$/;
 
 /* Download-site tags and file-format suffixes carry no meaning on a shelf. */
-const NOISE_TAIL = /[\(（\[【]\s*(z-?lib(\.\w+)?|www\.[^\)）\]】]+|[^\)）\]】]*\.(com|net|org|cn)|扫描版|高清版?|文字版|精校版|epub|pdf|mobi|azw3|txt|\d{1,2})\s*[\)）\]】]\s*$/i;
+const NOISE_TAIL = /[\(（\[【]\s*(z-?lib(\.\w+)?|www\.[^\)）\]】]+|[^\)）\]】]*\.(com|net|org|cn)|扫描版|高清版?|文字版|精校版|epub|pdf|mobi|azw3|txt|\d{1,5})\s*[\)）\]】]\s*$/i;
 
 function isDescParen(s) {
   const t = String(s || '').replace(/\s+/g, '');
@@ -210,7 +210,11 @@ function isJunkMeta(s, isAuthor) {
   if (/[\u2E80-\u2EFF\u3190-\u31EF\u31F0-\u31FF]/.test(t)) return true;
   if (looksForeignMojibake(t)) return true;
   if (/^(unknown|untitled( document)?|document\d*|无标题|未命名|未知|copyright|index|cover|contents)$/i.test(t)) return true;
-  if (isAuthor && /^(administrator|admin|user|owner|微软用户|microsoft|dell|hp|lenovo|asus)$/i.test(t)) return true;
+  // Printer / scanner output defaults. A whole set scanned and printed at once
+  // ends up titled 「SSReader Print.」 with author 「wanqan」; the value is legal
+  // text, so only an explicit list keeps it from pinning the books forever.
+  if (/^(ss\s*reader(\s*print)?\.?|ssreader\s*print\.?|e-?book\s*print(ed)?|camscanner|扫描全能王|扫描仪|打印(机)?|printed|print|scanned|scan|microsoft\s+(word|powerpoint|excel)\s*-\s*.*)$/i.test(t)) return true;
+  if (isAuthor && /^(administrator|admin|user|owner|微软用户|microsoft|dell|hp|lenovo|asus|wanqan|ss\s*reader|ssreader|scanner|scan|camscanner|canon|epson|brother|kyocera|ricoh|windows(\s*user)?)$/i.test(t)) return true;
   if (/^(版权信息|版权页|目录|前言|序言|扉页|封面|正文|第[一二三四五六七八九十\d]+页)$/.test(t)) return true;
   return false;
 }
@@ -225,13 +229,33 @@ function volumeStem(title) {
   return String(title || '').replace(/[.．]\d{1,2}$|第[\d一二三四五六七八九十]+[册卷部篇]$/, '');
 }
 
-function guessFromFilename(base) {
+/* Scanned sets often ship as 「【全宋诗】72册/01[652].pdf」: the folder carries
+ * the series name and the file keeps only a running number plus a page count.
+ * Turn that folder name into a series title, but only when it really looks like
+ * one (…72册 / …12卷), so an ordinary folder like 「小说」 never becomes a title. */
+function seriesFromDir(dirName) {
+  const d = String(dirName || '').trim();
+  if (!d) return '';
+  const m = d.match(/^[【《]?\s*([^】》]{2,30}?)\s*[】》]?\s*[\(（]?\s*\d{1,3}\s*(册|卷|部|集|本|篇)\s*[\)）]?$/);
+  return m ? m[1].trim() : '';
+}
+
+function guessFromFilename(base, dirName) {
   const original = String(base || '').trim();
   let s = original;
   for (let i = 0; i < 3 && NOISE_TAIL.test(s); i++) s = s.replace(NOISE_TAIL, '').trim();
   if (!s) s = original;
   // 「水浒传｜抑텗⍓쑎͓䅖⳿尉」 — the part after the bar is a broken sales pitch.
   s = splitBlurb(s);
+
+  // Bare running number in a numbered set: 01[652] → 「全宋诗 01」.
+  const bare = s.match(/^0*(\d{1,3})\s*(?:[\[【\(（]|$)/);
+  if (bare) {
+    const series = seriesFromDir(dirName);
+    if (series) {
+      return { title: series + ' ' + String(Number(bare[1])).padStart(2, '0'), author: '' };
+    }
+  }
 
   // Calibre-style export names: 书名_作者_年份_版本
   const under = original.split('_').map(x => x.trim()).filter(Boolean);
@@ -799,7 +823,7 @@ async function buildBook(entry, cfg, folder, previous, preStat, coverSet, preGue
   const id = hashId(folder + '|' + rel);
   const ext = path.extname(rel).slice(1).toLowerCase();
   const base = path.basename(rel, path.extname(rel));
-  const guessed = preGuess || guessFromFilename(base);
+  const guessed = preGuess || guessFromFilename(base, path.basename(path.dirname(rel)));
 
   // The probe pass already stat'ed the file; only pay for it again when this
   // function is called on its own.
@@ -939,7 +963,10 @@ async function scan(cfg, folders) {
     const probed = await mapLimit(files, 24, async entry => {
       const id = hashId(folder + '|' + entry.rel);
       const stat = await statOf(entry.full);
-      const guess = guessFromFilename(path.basename(entry.rel, path.extname(entry.rel)));
+      const guess = guessFromFilename(
+        path.basename(entry.rel, path.extname(entry.rel)),
+        path.basename(path.dirname(entry.rel))
+      );
       return { entry, id, stat, guess };
     });
 
@@ -1047,7 +1074,10 @@ async function rescrape(cfg, folder, rel, options) {
   }
 
   const coverSet = await listCovers(cfg.coverDir);
-  const guess = guessFromFilename(path.basename(rel, path.extname(rel)));
+  const guess = guessFromFilename(
+    path.basename(rel, path.extname(rel)),
+    path.basename(path.dirname(rel))
+  );
   const dirCoverPath = opts.ignoreFolderCover ? '' : await findDirCover(path.dirname(full));
   const book = await buildBook({ full, rel }, cfg, folder, null, stat, coverSet, guess, dirCoverPath);
   return { book, previous: prev };

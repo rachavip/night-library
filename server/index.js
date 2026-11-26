@@ -441,7 +441,22 @@ app.get('/api/book/:id/text', async (req, res) => {
   }
 });
 
-app.get('/api/book/:id/read', async (req, res) => {
+// MOBI / AZW3 have to be turned into EPUB before the browser can page through
+// them, and Calibre takes a while. The reader asks here first so a failure can
+// be reported as a sentence instead of an opaque "cannot load book" in the
+// epub.js layer.
+app.get('/api/book/:id/prepare', async (req, res) => {
+  const book = findBook(req.params.id);
+  if (!book) return res.status(404).json({ error: '没有找到这本书' });
+  if (book.format !== 'mobi' && book.format !== 'azw3') {
+    return res.json({ ok: true, format: book.format, cached: true });
+  }
+  const result = await converter.ensureEpub(book, cfg);
+  if (!result.ok) return res.status(422).json({ error: result.error });
+  res.json({ ok: true, format: 'epub', cached: Boolean(result.cached) });
+});
+
+async function serveRead(req, res) {
   const book = findBook(req.params.id);
   if (!book) return res.status(404).json({ error: '没有找到这本书' });
   if (book.format === 'txt') {
@@ -458,7 +473,13 @@ app.get('/api/book/:id/read', async (req, res) => {
   serveFile(req, res, file, MIME[book.format] || 'application/octet-stream', {
     'X-Read-Format': book.format
   });
-});
+}
+
+app.get('/api/book/:id/read', serveRead);
+// Same body, but with an .epub suffix. epub.js chooses how to open a book from
+// the URL extension alone: given /read it fell back to "unpacked directory" and
+// fetched META-INF/container.xml over HTTP, which 404s and kills every EPUB.
+app.get('/api/book/:id/read.epub', serveRead);
 
 app.get('/api/book/:id/file', (req, res) => {
   const book = findBook(req.params.id);
