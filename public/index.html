@@ -53,7 +53,31 @@
     <section class="intro">
       <h1>藏书 <span id="stat-count">—</span> 册</h1>
       <p id="stat-meta">正在整理书房…</p>
+      <p class="reading-line" id="reading-line" hidden></p>
     </section>
+
+    <!-- continue reading: the one book you are in the middle of -->
+    <section class="continue" id="continue" hidden aria-label="继续阅读">
+      <a class="continue-main" id="continue-main" href="/">
+        <span class="continue-cover"><img id="continue-img" alt="" loading="lazy"></span>
+        <span class="continue-body">
+          <span class="continue-kicker">继续阅读</span>
+          <strong id="continue-title"></strong>
+          <span class="continue-author" id="continue-author"></span>
+          <span class="continue-bar"><i id="continue-fill"></i></span>
+          <span class="continue-meta" id="continue-meta"></span>
+        </span>
+      </a>
+      <div class="continue-side">
+        <div class="continue-side-head">
+          <h2>最近在读</h2>
+          <button type="button" class="text-btn" id="reading-stats-open">阅读统计</button>
+        </div>
+        <div class="continue-list" id="continue-list"></div>
+      </div>
+    </section>
+
+    <nav class="shelves-bar" id="shelves-bar" aria-label="书单与阅读状态"></nav>
 
     <nav class="filters" id="filters" aria-label="格式筛选"></nav>
     <div class="shelf grid" id="shelf" aria-live="polite"></div>
@@ -73,6 +97,23 @@
       <h2 class="book-sheet-name" id="book-sheet-name">—</h2>
       <p class="book-sheet-author" id="book-sheet-author"></p>
       <p class="book-sheet-note" id="book-sheet-note" hidden></p>
+      <div class="state-switch" id="book-sheet-state" role="group" aria-label="阅读状态">
+        <button type="button" data-status="unread">未读</button>
+        <button type="button" data-status="reading">在读</button>
+        <button type="button" data-status="finished">读完</button>
+      </div>
+      <div class="book-sheet-links">
+        <button type="button" class="text-btn" id="book-sheet-notes">笔记与书签</button>
+        <button type="button" class="text-btn" id="book-sheet-shelf-btn">加入书单</button>
+      </div>
+      <div class="book-sheet-shelves" id="book-sheet-shelves"></div>
+      <div class="shelf-picker" id="shelf-picker" hidden>
+        <div class="shelf-picker-list" id="shelf-picker-list"></div>
+        <div class="shelf-picker-new">
+          <input id="shelf-new-name" type="text" maxlength="40" placeholder="新书单名称" aria-label="新书单名称">
+          <button type="button" class="ghost-btn" id="shelf-new-btn">新建</button>
+        </div>
+      </div>
       <dl class="book-sheet-meta" id="book-sheet-meta"></dl>
       <div class="book-sheet-actions">
         <button type="button" class="ghost-btn" id="book-sheet-open">打开阅读</button>
@@ -80,6 +121,18 @@
       </div>
       <p class="book-sheet-hint">重新刮削会丢掉这本书的缓存，重新读取文件本身的标题、作者和封面，不会跳过。</p>
     </div>
+  </div>
+
+  <!-- reading statistics -->
+  <div class="sheet-scrim" id="stats-scrim" hidden></div>
+  <div class="stats-sheet" id="stats-sheet" role="dialog" aria-modal="true" aria-labelledby="stats-title" hidden>
+    <button type="button" class="sheet-close" id="stats-close" aria-label="关闭阅读统计">×</button>
+    <h2 id="stats-title">阅读统计</h2>
+    <p class="stats-sub" id="stats-sub"></p>
+    <div class="stats-tiles" id="stats-tiles"></div>
+    <div class="stats-chart" id="stats-chart" aria-label="最近 30 天阅读时长"></div>
+    <p class="stats-chart-hint">最近 30 天</p>
+    <div class="stats-lists" id="stats-lists"></div>
   </div>
 
   <!-- settings drawer -->

@@ -24,6 +24,7 @@
           <option value="actual">实际大小</option>
         </select>
       </div>
+      <button type="button" id="notes-btn" title="笔记与书签" aria-label="笔记与书签">笔记</button>
       <button type="button" id="theme-btn" title="切换阅读主题">夜读</button>
       <div class="font-group" role="group" aria-label="字号">
         <button type="button" id="font-down" aria-label="减小字号">−</button>
@@ -41,9 +42,16 @@
   </div>
 
   <footer class="reader-foot">
+    <button type="button" id="first" title="回到第一页（Home）">首页</button>
     <button type="button" id="prev">上一页</button>
+    <label class="page-jump" id="page-jump" hidden>
+      <input id="page-input" type="text" inputmode="numeric" autocomplete="off" spellcheck="false"
+             aria-label="输入页码后回车跳转" title="输入页码，回车跳转">
+      <span id="page-total">/ 1</span>
+    </label>
     <input type="range" id="progress-track" min="0" max="100" value="0" aria-label="阅读进度">
     <button type="button" id="next">下一页</button>
+    <button type="button" id="last" title="跳到最后一页（End）">末页</button>
   </footer>
 
   <div class="reader-error" id="reader-error" hidden>
@@ -51,6 +59,40 @@
     <p id="reader-error-text"></p>
     <a href="/">回到书房</a>
   </div>
+
+  <!-- highlights, notes and bookmarks -->
+  <aside class="notes-panel" id="notes-panel" hidden aria-label="笔记与书签">
+    <div class="notes-head">
+      <h2>笔记与书签</h2>
+      <button type="button" id="notes-close" aria-label="关闭笔记">×</button>
+    </div>
+    <div class="notes-tabs" role="group" aria-label="笔记类型">
+      <button type="button" data-tab="highlights" aria-pressed="true">高亮<em id="notes-hl-count">0</em></button>
+      <button type="button" data-tab="bookmarks" aria-pressed="false">书签<em id="notes-bm-count">0</em></button>
+    </div>
+    <div class="notes-body" id="notes-body"></div>
+    <div class="notes-foot">
+      <button type="button" id="add-bookmark">＋ 加书签</button>
+      <button type="button" id="notes-export">导出 Markdown</button>
+    </div>
+  </aside>
+
+  <!-- appears next to a selection inside the book -->
+  <div class="sel-bar" id="sel-bar" hidden>
+    <button type="button" data-act="highlight">高亮</button>
+    <button type="button" data-act="note">写笔记</button>
+    <button type="button" data-act="cancel" aria-label="取消">×</button>
+  </div>
+
+  <div class="note-mask" id="note-mask" hidden></div>
+  <form class="note-editor" id="note-editor" hidden>
+    <p class="note-quote" id="note-quote"></p>
+    <textarea id="note-text" rows="4" placeholder="写点什么…" aria-label="笔记内容"></textarea>
+    <div class="note-actions">
+      <button type="button" id="note-cancel">取消</button>
+      <button type="submit">保存</button>
+    </div>
+  </form>
 
   <script src="/vendor/pdf.min.js"></script>
   <!-- epub.js reads EPUBs through JSZip and expects it as a global; without
