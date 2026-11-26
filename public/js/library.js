@@ -99,6 +99,11 @@
     return iso ? new Date(iso).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '';
   }
 
+  function span(ms) {
+    if (!ms && ms !== 0) return '';
+    return ms < 1000 ? ms + ' 毫秒' : (ms / 1000).toFixed(1) + ' 秒';
+  }
+
   async function renderStats() {
     try {
       var stats = await api('/api/stats');
@@ -112,6 +117,12 @@
       }) : '从未';
       var bits = ['上次整理 ' + when];
       if (stats.scanning) bits.push('正在整理…');
+      var last = stats.lastScan;
+      if (last && last.reused > 0) {
+        bits.push('跳过 ' + last.reused + ' 册未变化');
+      } else if (last && last.scraped > 0) {
+        bits.push('本次刮削 ' + last.scraped + ' 册 · ' + span(last.durationMs));
+      }
       if (stats.autoScanMinutes) {
         bits.push('每 ' + stats.autoScanMinutes + ' 分钟自动整理');
         if (stats.nextScanAt && !stats.scanning) bits.push('下次 ' + clock(stats.nextScanAt));
@@ -139,6 +150,13 @@
         return;
       }
       if (lastScannedAt && stats.scannedAt && stats.scannedAt !== lastScannedAt) {
+        var last = stats.lastScan;
+        // A scan that only re-stat'ed an unchanged shelf has nothing to show:
+        // update the caption and leave the grid alone.
+        if (last && last.changed === false) {
+          await renderStats();
+          return;
+        }
         var added = stats.count - lastCount;
         toast(added > 0 ? ('书房已更新，新增 ' + added + ' 册') : '书房已更新');
         await renderStats();
@@ -152,7 +170,11 @@
     rescanBtn.textContent = '刮削中…';
     try {
       var result = await api('/api/rescan', { method: 'POST' });
-      toast('已整理 ' + result.count + ' 册');
+      var st = result.stats || {};
+      var msg = '已整理 ' + result.count + ' 册';
+      if (st.reused > 0) msg += '，跳过 ' + st.reused + ' 册未变化';
+      if (st.durationMs !== undefined) msg += ' · ' + span(st.durationMs);
+      toast(msg);
       await renderStats();
       await renderBooks();
     } catch (e) {
