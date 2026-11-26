@@ -36,6 +36,10 @@
 
   <main class="viewer" id="viewer" aria-label="阅读内容"></main>
 
+  <div class="reader-busy" id="reader-busy" hidden role="status" aria-live="polite">
+    <span id="reader-busy-text">正在打开…</span>
+  </div>
+
   <footer class="reader-foot">
     <button type="button" id="prev">上一页</button>
     <input type="range" id="progress-track" min="0" max="100" value="0" aria-label="阅读进度">
@@ -49,6 +53,10 @@
   </div>
 
   <script src="/vendor/pdf.min.js"></script>
+  <!-- epub.js reads EPUBs through JSZip and expects it as a global; without
+       this line every EPUB (and every converted MOBI) dies with
+       "JSZip lib not loaded". -->
+  <script src="/vendor/jszip.min.js"></script>
   <script src="/vendor/epub.min.js"></script>
   <script src="/js/reader.js"></script>
 </body>
