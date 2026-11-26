@@ -18,9 +18,14 @@ COPY package.json package-lock.json* ./
 # pdf.js lists `canvas` as an optional Node-only dependency; it is not needed
 # because rendering happens in the browser, and compiling it in a slim image
 # would require extra native build packages.
-RUN npm install --omit=dev --omit=optional --no-audit --no-fund
+#
+# --ignore-scripts is required here: package.json has a postinstall hook that
+# runs scripts/prepare-vendor.js, but scripts/ is not copied into the image
+# until the next step. Run that hook explicitly after COPY . . below.
+RUN npm install --ignore-scripts --omit=dev --omit=optional --no-audit --no-fund
 
 COPY . .
+RUN node scripts/prepare-vendor.js
 
 VOLUME ["/books", "/app/data"]
 EXPOSE 8080
