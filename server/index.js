@@ -119,6 +119,11 @@ const MIME = {
 let currentIndex = { scannedAt: null, count: 0, books: [] };
 let progress = {};
 let scanning = false;
+let lastScanError = '';
+let scanIntervalMinutes = 0;
+let scanOnStart = true;
+let nextScanAt = null;
+let scanTimer = null;
 let settings = settingsStore.clone ? settingsStore.clone(settingsStore.DEFAULTS) : settingsStore.DEFAULTS;
 
 /* ---------- settings ---------- */
@@ -127,7 +132,8 @@ app.get('/api/settings', (req, res) => {
 });
 
 app.put('/api/settings', async (req, res) => {
-  settings = settingsStore.merge(settings, req.body);
+  // Env vars (from docker-compose.yml) always win over form values.
+  settings = settingsStore.applyEnv(settingsStore.merge(settings, req.body), process.env);
   try {
     await settingsStore.save(cfg, settings);
     res.json(settingsStore.forBrowser(settings));
@@ -208,6 +214,31 @@ app.get('/api/music/status', async (req, res) => {
   }
 });
 
+// Switch the active web player without going through the whole settings form.
+app.post('/api/music/active', async (req, res) => {
+  const id = String((req.body || {}).id || '').trim();
+  const next = settingsStore.clone(settings);
+  const service = next.music.services.find(s => s.id === id);
+  if (!service) return res.status(400).json({ error: '找不到这个音乐服务，请先在设置里填写地址' });
+  if (!service.url) return res.status(400).json({ error: '这个服务还没有填写地址' });
+  next.music.activeId = id;
+  next.music.url = service.url;
+  next.music.mode = 'embed';
+  settings = settingsStore.applyEnv(next, process.env);
+  try {
+    await settingsStore.save(cfg, settings);
+    res.json({
+      ok: true,
+      activeId: settings.music.activeId,
+      url: settings.music.url,
+      urlFromEnv: Boolean(settings.music.urlFromEnv),
+      name: service.name
+    });
+  } catch (e) {
+    res.status(500).json({ error: '切换失败：' + e.message });
+  }
+});
+
 // Test connection with values from the settings drawer before saving.
 app.post('/api/music/test', async (req, res) => {
   const body = req.body || {};
@@ -285,7 +316,12 @@ app.get('/api/stats', (req, res) => {
     formats,
     calibre: converter.isAvailable(),
     booksDir: cfg.booksDir,
-    folders: currentIndex.folders || []
+    folders: currentIndex.folders || [],
+    scanning: scanning,
+    scanOnStart: scanOnStart,
+    autoScanMinutes: scanIntervalMinutes,
+    nextScanAt: nextScanAt,
+    lastScanError: lastScanError
   });
 });
 
@@ -404,45 +440,86 @@ app.post('/api/folders/check', async (req, res) => {
   }
 });
 
-app.post('/api/rescan', async (req, res) => {
-  if (scanning) return res.status(409).json({ error: '正在刮削中，请稍候' });
+// One scan path for manual, startup and scheduled runs. The lock keeps the
+// three from stacking up when a book-heavy NAS is still scanning.
+async function runScan(reason) {
+  if (scanning) return { ok: false, skipped: true, error: '正在刮削中，请稍候' };
   scanning = true;
+  const started = Date.now();
   try {
     const folders = settings.folders && settings.folders.length ? settings.folders : [cfg.booksDir];
     currentIndex = await library.scan(cfg, folders);
-    res.json({
-      ok: true,
-      count: currentIndex.count,
-      scannedAt: currentIndex.scannedAt,
-      folders: currentIndex.folders
-    });
+    lastScanError = '';
+    console.log(`[scan/${reason}] ${currentIndex.count} 册 · ${Date.now() - started}ms`);
+    return { ok: true, count: currentIndex.count, scannedAt: currentIndex.scannedAt, folders: currentIndex.folders };
   } catch (e) {
-    res.status(500).json({ error: String(e.message || e) });
+    lastScanError = String(e.message || e);
+    console.warn(`[scan/${reason}] failed: ${lastScanError}`);
+    return { ok: false, error: lastScanError };
   } finally {
     scanning = false;
   }
+}
+
+app.post('/api/rescan', async (req, res) => {
+  const result = await runScan('manual');
+  if (result.skipped) return res.status(409).json({ error: result.error });
+  if (!result.ok) return res.status(500).json({ error: result.error });
+  res.json({ ok: true, count: result.count, scannedAt: result.scannedAt, folders: result.folders });
 });
 
 app.use(express.static(path.join(ROOT, 'public'), { index: false }));
 app.get('/', (req, res) => res.sendFile(path.join(ROOT, 'public', 'index.html')));
 app.get('/reader', (req, res) => res.sendFile(path.join(ROOT, 'public', 'reader.html')));
 
+// Minutes between automatic scans. 0 disables the timer (startup scan still
+// runs). Non-numeric or negative values fall back to the default.
+function parseScanInterval(raw) {
+  if (raw == null || raw === '') return 60;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return 60;
+  return n;
+}
+
+function scheduleScans() {
+  if (scanTimer) clearInterval(scanTimer);
+  scanTimer = null;
+  if (!scanIntervalMinutes) { nextScanAt = null; return; }
+  const every = scanIntervalMinutes * 60 * 1000;
+  nextScanAt = new Date(Date.now() + every).toISOString();
+  scanTimer = setInterval(function () {
+    // Skip silently if a manual or startup scan is still running.
+    if (scanning) return;
+    runScan('timer').then(function () {
+      nextScanAt = new Date(Date.now() + every).toISOString();
+    });
+  }, every);
+  if (scanTimer.unref) scanTimer.unref();
+}
+
 async function start() {
   await fsp.mkdir(cfg.dataDir, { recursive: true });
-  settings = await settingsStore.load(cfg);
+  settings = settingsStore.applyEnv(await settingsStore.load(cfg), process.env);
   currentIndex = await library.loadIndex(cfg);
   progress = await library.loadProgress(cfg);
-  const folders = settings.folders && settings.folders.length ? settings.folders : [cfg.booksDir];
-  if (!currentIndex.scannedAt || process.env.SCAN_ON_START === '1') {
-    try { currentIndex = await library.scan(cfg, folders); }
-    catch (e) { console.warn('[library] initial scan failed:', e.message); }
-  }
+
+  scanIntervalMinutes = parseScanInterval(process.env.SCAN_INTERVAL_MINUTES);
+  scanOnStart = String(process.env.SCAN_ON_START || '1') !== '0';
+
+  // Serve the cached shelf immediately, then refresh in the background so a
+  // large library never leaves the web UI hanging at startup.
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`${settings.systemName} running at http://localhost:${PORT}`);
     console.log(`books: ${cfg.booksDir}`);
     console.log(`data:  ${cfg.dataDir}`);
     console.log(`books indexed: ${currentIndex.books.length}`);
+    console.log(`auto scan: startup=${scanOnStart ? 'on' : 'off'}, interval=${scanIntervalMinutes ? scanIntervalMinutes + 'min' : 'off'}`);
   });
+
+  if (scanOnStart || !currentIndex.scannedAt) {
+    setImmediate(function () { runScan('startup'); });
+  }
+  scheduleScans();
 }
 
 start().catch(e => {

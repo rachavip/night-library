@@ -7,6 +7,16 @@ const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
 
+// Web players the drawer knows how to embed. Only services with a URL show up
+// in the switcher, so an empty preset never becomes a dead menu item.
+const MUSIC_SERVICES = [
+  { id: 'anylisten', name: 'AnyListen', url: 'http://192.168.0.111:9500', loginUrl: '' },
+  { id: 'music-dl', name: 'music-dl', url: '', loginUrl: '' },
+  { id: 'songloft', name: 'Songloft', url: '', loginUrl: '' },
+  { id: 'melodyhub', name: 'MelodyHub', url: '', loginUrl: '' },
+  { id: 'solara', name: 'Solara 光域', url: '', loginUrl: '' }
+];
+
 const DEFAULTS = {
   systemName: '夜读',
   subtitle: '我的书房',
@@ -16,8 +26,37 @@ const DEFAULTS = {
   // AnyListen is embedded as a web page by default - it already has its own
   // player UI, so no audio proxy is needed. "subsonic" keeps the lightweight
   // random-play bar for Navidrome-style servers.
-  music: { mode: 'embed', enabled: false, url: 'http://192.168.0.111:9500', user: '', password: '', volume: 0.8 }
+  // Pre-filled with the owner's AnyListen address. Overridable by MUSIC_URL in
+  // compose or by the settings drawer. Priority: env > saved value > default.
+  music: {
+    mode: 'embed', enabled: false,
+    url: 'http://192.168.0.111:9500',
+    user: '', password: '', volume: 0.8,
+    activeId: 'anylisten',
+    services: clone(MUSIC_SERVICES)
+  }
 };
+
+// Environment overrides applied after loading settings.json. Priority:
+//   env var > saved settings.json > DEFAULTS
+// MUSIC_URL / MUSIC_MODE let a NAS compose file declare the music service
+// declaratively, so the address can be changed without touching the database.
+function applyEnv(settings, env) {
+  const out = clone(settings);
+  const e = env || {};
+  const url = cleanString(e.MUSIC_URL, 300, '');
+  const mode = cleanString(e.MUSIC_MODE, 20, '');
+  if (url) {
+    out.music.url = url;
+    const list = Array.isArray(out.music.services) ? out.music.services : (out.music.services = []);
+    const active = list.find(s => s.id === out.music.activeId);
+    if (active) active.url = url;
+    else if (list.length) list[0].url = url;
+  }
+  if (MUSIC_MODES.has(mode)) out.music.mode = mode;
+  out.music.urlFromEnv = Boolean(url);
+  return out;
+}
 
 const MUSIC_MODES = new Set(['embed', 'subsonic']);
 
@@ -63,6 +102,35 @@ function cleanString(value, max, fallback) {
   return s ? s.slice(0, max) : fallback;
 }
 
+const SERVICE_ID = /^[A-Za-z0-9_-]{1,40}$/;
+
+// Returns null when the field was not supplied, so merge() can leave it alone.
+function cleanServices(value, fallback) {
+  if (!Array.isArray(value)) return fallback ? clone(fallback) : null;
+  const seen = new Set();
+  const out = [];
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue;
+    const id = cleanString(item.id, 40, '');
+    if (!SERVICE_ID.test(id) || seen.has(id)) continue;
+    seen.add(id);
+    out.push({
+      id: id,
+      name: cleanString(item.name, 40, id),
+      url: cleanString(item.url, 300, ''),
+      loginUrl: cleanString(item.loginUrl, 300, '')
+    });
+  }
+  return out;
+}
+
+function cleanActiveId(value, services) {
+  const id = cleanString(value, 40, '');
+  if (id && services.some(s => s.id === id && s.url)) return id;
+  const first = services.find(s => s.url);
+  return first ? first.id : '';
+}
+
 async function load(cfg) {
   try {
     const raw = JSON.parse(await fsp.readFile(file(cfg), 'utf8'));
@@ -80,7 +148,13 @@ async function load(cfg) {
     const music = raw.music || {};
     out.music.mode = MUSIC_MODES.has(music.mode) ? music.mode : 'embed';
     out.music.enabled = Boolean(music.enabled);
-    out.music.url = cleanString(music.url, 300, DEFAULTS.music.url);
+    out.music.services = cleanServices(music.services, MUSIC_SERVICES);
+    out.music.activeId = cleanActiveId(music.activeId, out.music.services);
+    // Older settings.json had no services list - keep its url as the active one.
+    const savedUrl = cleanString(music.url, 300, '');
+    const active = out.music.services.find(s => s.id === out.music.activeId);
+    if (savedUrl && active) active.url = savedUrl;
+    out.music.url = active ? active.url : (savedUrl || DEFAULTS.music.url);
     out.music.user = cleanString(music.user, 120, '');
     out.music.password = String(music.password == null ? '' : music.password).slice(0, 200);
     out.music.volume = clamp(music.volume, 0, 1, 0.8);
@@ -122,6 +196,13 @@ function merge(current, input) {
   if (MUSIC_MODES.has(music.mode)) out.music.mode = music.mode;
   if (Object.prototype.hasOwnProperty.call(music, 'enabled')) out.music.enabled = Boolean(music.enabled);
   if (Object.prototype.hasOwnProperty.call(music, 'url')) out.music.url = cleanString(music.url, 300, '');
+  const services = cleanServices(music.services, null);
+  if (services !== null) {
+    out.music.services = services;
+    out.music.activeId = cleanActiveId(music.activeId, services);
+    const active = services.find(s => s.id === out.music.activeId);
+    if (active && active.url) out.music.url = active.url;
+  }
   if (Object.prototype.hasOwnProperty.call(music, 'user')) out.music.user = cleanString(music.user, 120, '');
   if (Object.prototype.hasOwnProperty.call(music, 'password') && music.password !== '********') {
     out.music.password = String(music.password || '').slice(0, 200);
@@ -136,4 +217,4 @@ function forBrowser(settings) {
   return out;
 }
 
-module.exports = { DEFAULTS, THEMES, clone, load, save, merge, forBrowser };
+module.exports = { DEFAULTS, THEMES, clone, load, save, merge, applyEnv, forBrowser };

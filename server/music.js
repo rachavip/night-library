@@ -87,11 +87,39 @@ function coverUrl(music, id, size) {
   return buildUrl(music, 'getCoverArt', { id: String(id), size: String(size || 160) });
 }
 
+/* ---------- embedded web player reachability ---------- */
+
+function getHeader(headers, name) {
+  if (headers && typeof headers.get === 'function') return headers.get(name) || '';
+  return (headers && headers[name]) || '';
+}
+
+// The server cannot run the browser's frame policy, but response headers give
+// a reliable early warning. We report it instead of hard-blocking the iframe:
+// a reverse proxy may still let the page through.
+function inspectFramePolicy(headers) {
+  const xfo = String(getHeader(headers, 'x-frame-options')).trim().toLowerCase();
+  if (xfo === 'deny' || xfo === 'sameorigin' || xfo === 'same-origin') {
+    return { embeddable: false, blockReason: 'x-frame-options' };
+  }
+  const csp = String(getHeader(headers, 'content-security-policy'));
+  const m = csp.match(/frame-ancestors\s+([^;]+)/i);
+  if (m && !/(^|\s)\*(\s|$)/.test(m[1])) {
+    return { embeddable: false, blockReason: 'csp' };
+  }
+  return { embeddable: true, blockReason: null };
+}
+
+function embedHint(embeddable, loginRequired) {
+  if (!embeddable && loginRequired) return '这个站点限制了嵌入，也可能要求登录。点「新窗口打开」登录后照常播放最稳。';
+  if (!embeddable) return '站点设置了嵌入限制。如果下方空白，点「新窗口打开」照常播放。';
+  if (loginRequired) return '服务可能要求登录。打开登录页登录后，回来点「重新加载」即可带上登录状态。';
+  return '已连接，可以直接听歌。';
+}
+
 /* Generic reachability check for embedded web players (AnyListen etc.). */
 async function probe(rawUrl) {
-  let url;
-  try { url = normalizeBase(rawUrl); }
-  catch (e) { throw e; }
+  const url = normalizeBase(rawUrl);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 8000);
   try {
@@ -101,7 +129,19 @@ async function probe(rawUrl) {
     }
     const html = await res.text();
     const m = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-    return { ok: true, type: 'embed', url, title: m ? m[1].trim().slice(0, 80) : '网页播放器', status: res.status };
+    const title = m ? m[1].trim().slice(0, 80) : '网页播放器';
+    const policy = inspectFramePolicy(res.headers);
+    const head = html.slice(0, 20000);
+    const looksLikeLogin = /(login|sign\s*in|登录|登錄)/i.test(title) ||
+      /<input[^>]+type=["']password["']/i.test(head);
+    const loginRequired = res.status === 401 || res.status === 403 || looksLikeLogin;
+    return {
+      ok: true, type: 'embed', url, title, status: res.status,
+      embeddable: policy.embeddable,
+      blockReason: policy.blockReason,
+      loginRequired: Boolean(loginRequired),
+      hint: embedHint(policy.embeddable, Boolean(loginRequired))
+    };
   } catch (e) {
     if (e.name === 'AbortError') throw new Error('连接超时，请检查 IP 和端口');
     if (e instanceof TypeError) throw new Error('连不上这个地址，请检查 IP、端口和容器网络');
