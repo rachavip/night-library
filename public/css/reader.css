@@ -73,6 +73,17 @@ button { cursor: pointer; }
 .font-group { display: flex; align-items: center; gap: 2px; }
 .font-group button { min-width: 28px; padding: 6px 7px; }
 .font-group span { min-width: 26px; text-align: center; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+
+.zoom-group select {
+  padding: 5px 8px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--line-c);
+  border-radius: 3px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.zoom-group select:hover { color: var(--accent); border-color: var(--accent); }
 #page-info { min-width: 74px; text-align: right; font-family: var(--mono); font-size: 11px; color: var(--muted); }
 
 .viewer {
@@ -95,13 +106,12 @@ button { cursor: pointer; }
 }
 .viewer .txt-page p { margin: 0 0 .85em; text-indent: 2em; }
 .viewer .pdf-stage {
-  max-width: 100%;
+  width: 100%;
   height: 100%;
   overflow: auto;
-  display: flex;
-  justify-content: center;
-  align-items: flex-start;
+  display: block;
 }
+.viewer .pdf-stage canvas { display: block; margin: 0 auto; }
 .viewer canvas { box-shadow: 0 10px 34px rgba(0, 0, 0, 0.22); background: #fff; }
 
 .reader-foot {
