@@ -1,0 +1,10 @@
+{
+  "version": "0.4",
+  "date": "2026-11-26",
+  "notes": [
+    "主页副标题后新增版本徽标与检查更新，一眼判断NAS是否为最新版",
+    "音乐支持 AnyListen / music-dl / Songloft / MelodyHub / Solara 切换，带登录与嵌入状态提示",
+    "自动刮削：每次启动刮一次 + 网页自定义间隔，改完立即生效",
+    "PDF / MOBI / AZW3 / TXT 均提取真实封面，TXT 可用同名图片"
+  ]
+}

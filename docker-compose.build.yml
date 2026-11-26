@@ -19,6 +19,6 @@ services:
       BOOKS_DIR: /vol1/1000/EBook
       DATA_DIR: /app/data
       PORT: "8080"
-      # 自动刮削：默认每次启动刮一次 + 每 60 分钟刮一次
-      # SCAN_ON_START: 1
-      # SCAN_INTERVAL_MINUTES: 60   # 设 0 = 只保留启动刮一次
+      # 自动刮削：建议保持注释，去网页 ⚙ → 自动刮削 里改，保存后立即生效
+      # SCAN_ON_START: 1              # 0 = 关闭启动刮削（首次无索引仍会刮）
+      # SCAN_INTERVAL_MINUTES: 60     # 分钟；0 = 关闭定时
