@@ -13,6 +13,9 @@ fs.mkdirSync(dest, { recursive: true });
 const copies = [
   ['node_modules/pdfjs-dist/build/pdf.min.js', 'pdf.min.js'],
   ['node_modules/pdfjs-dist/build/pdf.worker.min.js', 'pdf.worker.min.js'],
+  // epub.js does not bundle its zip reader: without a global JSZip it throws
+  // "JSZip lib not loaded" and every EPUB / converted MOBI fails to open.
+  ['node_modules/jszip/dist/jszip.min.js', 'jszip.min.js'],
   ['node_modules/epubjs/dist/epub.min.js', 'epub.min.js']
 ];
 
