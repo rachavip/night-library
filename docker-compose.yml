@@ -5,7 +5,7 @@ services:
     # ===== 部署前只需改这一行 =====
     # 把 your-github-name 换成你的 GitHub 用户名（必须小写），
     # 仓库名保持 night-library，与 DEPLOY_GITHUB.md 里的步骤一致。
-    image: ghcr.io/your-github-name/night-library:latest
+    image: ghcr.io/rachavip/night-library:latest
     # 如果想在自己的机器上本地构建（不经过 GitHub），
     # 改用同目录下的 docker-compose.build.yml 即可。
     container_name: ebooks
@@ -21,6 +21,6 @@ services:
     environment:
       TZ: Asia/Shanghai
       # 默认电子书文件夹；可在网页「设置 - 电子书文件夹」里增删
-      BOOKS_DIR: /vol1/1000/docker/ebooks
+      BOOKS_DIR: /vol1/1000/EBook
       DATA_DIR: /app/data
       PORT: "8080"
