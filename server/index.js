@@ -120,6 +120,9 @@ const MIME = {
 let currentIndex = { scannedAt: null, count: 0, books: [] };
 let progress = {};
 let scanning = false;
+// Books being re-scraped on their own. A single-book repair writes the index,
+// so it must not overlap with a full scan; the set doubles as the lock.
+const bookJobs = new Set();
 let lastScanError = '';
 let scanIntervalMinutes = 0;
 let scanOnStart = true;
@@ -342,7 +345,7 @@ app.get('/api/stats', (req, res) => {
 });
 
 app.get('/api/books', (req, res) => {
-  const { sort = 'added', order = 'desc', q = '', format = '' } = req.query;
+  const { sort = 'title', order = 'asc', q = '', format = '' } = req.query;
   let books = currentIndex.books;
   if (format) books = books.filter(b => b.format === format);
   if (q) {
@@ -364,6 +367,47 @@ app.get('/api/book/:id', (req, res) => {
   res.json({ ...book, progress: progress[book.id] || null });
 });
 
+// Force one book through a complete re-scrape. This is the escape hatch for a
+// record that came out garbled or coverless: it ignores the incremental cache
+// entirely, deletes the cached cover and reads the file from disk again.
+app.post('/api/book/:id/rescan', async (req, res) => {
+  const book = findBook(req.params.id);
+  if (!book) return res.status(404).json({ error: '没有找到这本书' });
+  if (scanning) return res.status(409).json({ error: '书库正在整理，等它跑完再试' });
+  if (bookJobs.has(book.id)) return res.status(409).json({ error: '这本书正在刮削' });
+  bookJobs.add(book.id);
+  const started = Date.now();
+  try {
+    const folder = book.folder || cfg.booksDir;
+    const result = await library.rescrape(cfg, folder, book.path);
+    const at = currentIndex.books.findIndex(b => b.id === book.id);
+    if (at >= 0) currentIndex.books[at] = result.book;
+    currentIndex.scannedAt = new Date().toISOString();
+    await library.saveIndex(cfg, currentIndex);
+
+    const before = result.previous;
+    const ms = Date.now() - started;
+    console.log(`[rescan/book] ${book.path} · ${ms}ms · ${before ? before.title : '(无旧记录)'} → ${result.book.title}`);
+    res.json({
+      ok: true,
+      book: result.book,
+      durationMs: ms,
+      before: before ? { title: before.title, author: before.author, coverFile: before.coverFile } : null,
+      changed: {
+        title: !before || (before.title || '') !== (result.book.title || ''),
+        author: !before || (before.author || '') !== (result.book.author || ''),
+        cover: !before || (before.coverFile || '') !== (result.book.coverFile || '')
+      }
+    });
+  } catch (e) {
+    const msg = String(e.message || e);
+    console.warn(`[rescan/book] failed: ${msg}`);
+    res.status(e.code === 'EBOOKMISSING' ? 404 : 500).json({ error: msg });
+  } finally {
+    bookJobs.delete(book.id);
+  }
+});
+
 app.get('/api/book/:id/cover', async (req, res) => {
   const book = findBook(req.params.id);
   if (!book) return res.status(404).end();
@@ -374,8 +418,10 @@ app.get('/api/book/:id/cover', async (req, res) => {
       return serveFile(req, res, f, ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg');
     }
   }
+  // A generated card is a stand-in, not a real cover: keep it on a short lease
+  // so a later scrape can replace it without the user clearing the cache.
   res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
-  res.setHeader('Cache-Control', 'public, max-age=86400');
+  res.setHeader('Cache-Control', 'public, max-age=300');
   res.end(generatedCover(book));
 });
 
@@ -460,6 +506,7 @@ app.post('/api/folders/check', async (req, res) => {
 // three from stacking up when a book-heavy NAS is still scanning.
 async function runScan(reason) {
   if (scanning) return { ok: false, skipped: true, error: '正在刮削中，请稍候' };
+  if (bookJobs.size) return { ok: false, skipped: true, error: '正在单独刮削某本书，请稍候' };
   scanning = true;
   const started = Date.now();
   try {
