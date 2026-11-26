@@ -53,38 +53,45 @@
     <section class="intro">
       <h1>藏书 <span id="stat-count">—</span> 册</h1>
       <p id="stat-meta">正在整理书房…</p>
-      <p class="reading-line" id="reading-line" hidden></p>
     </section>
 
-    <!-- continue reading: the one book you are in the middle of -->
-    <section class="continue" id="continue" hidden aria-label="继续阅读">
-      <a class="continue-main" id="continue-main" href="/">
-        <span class="continue-cover"><img id="continue-img" alt="" loading="lazy"></span>
-        <span class="continue-body">
-          <span class="continue-kicker">继续阅读</span>
-          <strong id="continue-title"></strong>
-          <span class="continue-author" id="continue-author"></span>
-          <span class="continue-bar"><i id="continue-fill"></i></span>
-          <span class="continue-meta" id="continue-meta"></span>
-        </span>
-      </a>
-      <div class="continue-side">
-        <div class="continue-side-head">
-          <h2>最近在读</h2>
-          <button type="button" class="text-btn" id="reading-stats-open">阅读统计</button>
+    <div class="layout" id="layout">
+      <!-- left rail: what you are reading, kept out of the shelf's way -->
+      <aside class="rail" id="rail" aria-label="阅读记录">
+        <!-- continue reading: the one book you are in the middle of -->
+        <section class="continue" id="continue" hidden aria-label="继续阅读">
+          <a class="continue-main" id="continue-main" href="/">
+            <span class="continue-cover"><img id="continue-img" alt="" loading="lazy"></span>
+            <span class="continue-body">
+              <span class="continue-kicker">继续阅读</span>
+              <strong id="continue-title"></strong>
+              <span class="continue-author" id="continue-author"></span>
+              <span class="continue-bar"><i id="continue-fill"></i></span>
+              <span class="continue-meta" id="continue-meta"></span>
+            </span>
+          </a>
+          <div class="continue-side">
+            <div class="continue-side-head">
+              <h2>最近在读</h2>
+            </div>
+            <div class="continue-list" id="continue-list"></div>
+          </div>
+        </section>
+
+        <p class="reading-line" id="reading-line" hidden></p>
+      </aside>
+
+      <div class="shelf-col">
+        <nav class="shelves-bar" id="shelves-bar" aria-label="书单与阅读状态"></nav>
+
+        <nav class="filters" id="filters" aria-label="格式筛选"></nav>
+        <div class="shelf grid" id="shelf" aria-live="polite"></div>
+        <div class="empty" id="empty" hidden>
+          <h2>这一格还空着</h2>
+          <p>把书放进挂载的文件夹，再点一次「刮削」就会出现在书架。</p>
+          <button class="ghost-btn" type="button" id="empty-rescan">重新刮削</button>
         </div>
-        <div class="continue-list" id="continue-list"></div>
       </div>
-    </section>
-
-    <nav class="shelves-bar" id="shelves-bar" aria-label="书单与阅读状态"></nav>
-
-    <nav class="filters" id="filters" aria-label="格式筛选"></nav>
-    <div class="shelf grid" id="shelf" aria-live="polite"></div>
-    <div class="empty" id="empty" hidden>
-      <h2>这一格还空着</h2>
-      <p>把书放进挂载的文件夹，再点一次「刮削」就会出现在书架。</p>
-      <button class="ghost-btn" type="button" id="empty-rescan">重新刮削</button>
     </div>
   </main>
 
