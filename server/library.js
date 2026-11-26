@@ -138,24 +138,49 @@ async function scrapeEpub(file, coverDir, id) {
   return meta;
 }
 
+/* PDF metadata strings are often UTF-16BE with a FE FF BOM. Node has no
+ * 'utf16be' Buffer encoding, so decode code units by hand. */
+function decodePdfText(bytes) {
+  if (!bytes || bytes.length < 2) return '';
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) {
+    const out = [];
+    for (let i = 2; i + 1 < bytes.length; i += 2) {
+      out.push(String.fromCharCode(bytes.readUInt16BE(i)));
+    }
+    return clean(out.join(''));
+  }
+  return clean(bytes.toString('utf8').replace(/^\uFEFF/, ''));
+}
+
+/* A value that looks like mojibake must not block Calibre's correct title. */
+function looksGarbled(s) {
+  return Boolean(s) && (/^þÿ/.test(s) || /[\u0000-\u0008\u000e-\u001f]/.test(s));
+}
+
 function scrapePdf(file) {
   return fsp.readFile(file).then(buf => {
     const s = buf.toString('latin1');
     const get = key => {
       let m = s.match(new RegExp('/' + key + '\\s*\\((([^()\\\\]|\\\\.){0,300})\\)'));
-      if (m) return clean(m[1].replace(/\\([()\\])/g, '$1'));
+      if (m) {
+        // The literal is a latin1 view of the raw bytes: convert back and
+        // decode UTF-16BE when a BOM is present.
+        return decodePdfText(Buffer.from(m[1].replace(/\\([()\\])/g, '$1'), 'latin1'));
+      }
       m = s.match(new RegExp('/' + key + '\\s*<([0-9A-Fa-f]{4,600})>'));
       if (m) {
-        const hex = m[1];
         try {
-          const bytes = Buffer.from(hex, 'hex');
-          if (hex.toUpperCase().startsWith('FEFF')) return clean(bytes.toString('utf16be').replace(/^\uFEFF/, ''));
-          return clean(bytes.toString('utf8'));
+          return decodePdfText(Buffer.from(m[1], 'hex'));
         } catch (e) { /* ignore */ }
       }
       return '';
     };
-    return { title: get('Title'), author: get('Author') };
+    const title = get('Title');
+    const author = get('Author');
+    return {
+      title: looksGarbled(title) ? '' : title,
+      author: looksGarbled(author) ? '' : author
+    };
   }).catch(() => ({}));
 }
 
