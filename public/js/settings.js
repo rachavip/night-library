@@ -152,6 +152,14 @@
     el('folder-count').textContent = folders.length + ' 个';
   }
 
+  function renderScan() {
+    var scan = (settings && settings.scan) || {};
+    el('scan-on-start').checked = scan.onStart !== false;
+    el('scan-interval').value = scan.intervalMinutes != null ? scan.intervalMinutes : 60;
+    var hint = el('scan-env-hint');
+    if (hint) hint.hidden = !(scan.onStartFromEnv || scan.intervalFromEnv);
+  }
+
   function applyAll(next) {
     settings = next;
     folders = (settings.folders || []).slice();
@@ -164,6 +172,7 @@
     document.title = (settings.systemName || '夜读') + ' · ' + (settings.subtitle || '我的书房');
     el('set-name').value = settings.systemName || '';
     el('set-subtitle').value = settings.subtitle || '';
+    renderScan();
     el('bg-path').value = (settings.background && settings.background.data && !settings.background.data.startsWith('uploaded:'))
       ? settings.background.data : '';
     el('bg-dim').value = Math.round((settings.background.dim != null ? settings.background.dim : 0.55) * 100);
@@ -198,6 +207,10 @@
       subtitle: el('set-subtitle').value,
       theme: pendingTheme,
       folders: folders.slice(),
+      scan: {
+        onStart: el('scan-on-start').checked,
+        intervalMinutes: el('scan-interval').value.trim() === '' ? 60 : Number(el('scan-interval').value)
+      },
       background: {
         enabled: Boolean(el('bg-path').value.trim()) || Boolean(pendingBg && pendingBg.data) ||
           Boolean(settings.background && settings.background.enabled && settings.background.data),
@@ -417,6 +430,7 @@
   /* boot */
   fetch('/api/settings').then(function (r) { return r.json(); }).then(applyAll).catch(function () {
     applyAll({ systemName: '夜读', subtitle: '我的书房', theme: 'night',
+      scan: { onStart: true, intervalMinutes: 60 },
       background: { enabled: false, data: '', dim: 0.55, blur: 0 },
       music: { mode: 'embed', enabled: false, url: 'http://192.168.0.111:9500', user: '', password: '', volume: 0.8,
         activeId: 'anylisten',
