@@ -12,6 +12,8 @@
   var themeBtn = document.getElementById('theme-btn');
   var fontLabel = document.getElementById('font-size');
   var errorBox = document.getElementById('reader-error');
+  var zoomGroup = document.getElementById('zoom-group');
+  var zoomSelect = document.getElementById('zoom-mode');
 
   var theme = localStorage.getItem('reader-theme') || 'paper';
   var fontSize = Number(localStorage.getItem('reader-font')) || 18;
@@ -74,6 +76,9 @@
   }
 
   /* ---------------- PDF ---------------- */
+  var ZOOM_KEY = 'reader-zoom';
+  var zoomMode = localStorage.getItem(ZOOM_KEY) || 'fit-width';
+
   async function initPdf() {
     pdfjsLib.GlobalWorkerOptions.workerSrc = '/vendor/pdf.worker.min.js';
     var task = pdfjsLib.getDocument({ url: '/api/book/' + id + '/read', rangeChunkSize: 65536 });
@@ -85,6 +90,68 @@
     viewer.replaceChildren(stage);
 
     var current = 0;
+    var boxCache = new Map();
+
+    function viewportSize() {
+      return {
+        w: Math.max(200, viewer.clientWidth - 40),
+        h: Math.max(200, viewer.clientHeight - 40)
+      };
+    }
+
+    /* "Fit visible" means fitting the printed area, not the paper: render the
+     * page small into an offscreen canvas, find the ink bounding box, and use
+     * that instead of the full media box. Scanned pages carry wide margins, so
+     * without this the mode would look identical to fit-page. */
+    async function contentBox(page, num) {
+      if (boxCache.has(num)) return boxCache.get(num);
+      var base = page.getViewport({ scale: 1 });
+      var probe = Math.min(1, 420 / Math.max(1, base.width));
+      var vp = page.getViewport({ scale: probe });
+      var c = document.createElement('canvas');
+      c.width = Math.max(1, Math.floor(vp.width));
+      c.height = Math.max(1, Math.floor(vp.height));
+      var ctx = c.getContext('2d', { willReadFrequently: true });
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, c.width, c.height);
+      try {
+        await page.render({ canvasContext: ctx, viewport: vp }).promise;
+      } catch (e) {
+        return null;
+      }
+      var data;
+      try {
+        data = ctx.getImageData(0, 0, c.width, c.height).data;
+      } catch (e) {
+        return null;
+      }
+      var minX = c.width, minY = c.height, maxX = -1, maxY = -1;
+      for (var y = 0; y < c.height; y++) {
+        var row = y * c.width * 4;
+        for (var x = 0; x < c.width; x++) {
+          var i = row + x * 4;
+          if (data[i] < 246 || data[i + 1] < 246 || data[i + 2] < 246) {
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+          }
+        }
+      }
+      if (maxX < 0) { boxCache.set(num, null); return null; }
+      var p1 = vp.convertToPdfPoint(minX, minY);
+      var p2 = vp.convertToPdfPoint(maxX + 1, maxY + 1);
+      var rect = {
+        x: Math.min(p1[0], p2[0]),
+        y: Math.min(p1[1], p2[1]),
+        w: Math.abs(p2[0] - p1[0]),
+        h: Math.abs(p2[1] - p1[1])
+      };
+      if (boxCache.size > 40) boxCache.clear();
+      boxCache.set(num, rect);
+      return rect;
+    }
+
     engine = {
       type: 'pdf',
       percent: function () { return doc.numPages > 1 ? (current - 1) / (doc.numPages - 1) : 1; },
@@ -96,22 +163,81 @@
         current = clamp(Math.round(n), 1, doc.numPages);
         var page = await doc.getPage(current);
         var base = page.getViewport({ scale: 1 });
-        var scale = Math.max(0.4, (viewer.clientWidth - 36) / base.width);
+        var view = viewportSize();
+        var box = zoomMode === 'fit-visible' ? await contentBox(page, current) : null;
+
+        var scale;
+        if (zoomMode === 'actual') scale = 96 / 72;
+        else if (zoomMode === 'fit-page') scale = Math.min(view.w / base.width, view.h / base.height);
+        else if (box) scale = Math.min(view.w / box.w, view.h / box.h);
+        else scale = view.w / base.width;
+        scale = Math.max(0.05, Math.min(scale, 6));
+
         var vp = page.getViewport({ scale: scale });
         var dpr = window.devicePixelRatio || 1;
-        canvas.width = Math.floor(vp.width * dpr);
-        canvas.height = Math.floor(vp.height * dpr);
-        canvas.style.width = Math.floor(vp.width) + 'px';
-        canvas.style.height = Math.floor(vp.height) + 'px';
-        var ctx = canvas.getContext('2d');
-        await page.render({ canvasContext: ctx, viewport: vp, transform: [dpr, 0, 0, dpr, 0, 0] }).promise;
+        var ctx;
+
+        if (box) {
+          // Render the whole page offscreen, then copy only the ink area into
+          // the visible canvas. Cropping by pixel copy keeps this correct no
+          // matter how the renderer composes its transform matrix.
+          var q1 = vp.convertToViewportPoint(box.x, box.y);
+          var q2 = vp.convertToViewportPoint(box.x + box.w, box.y + box.h);
+          var sx = Math.min(q1[0], q2[0]);
+          var sy = Math.min(q1[1], q2[1]);
+          var sw = Math.max(1, Math.abs(q2[0] - q1[0]));
+          var sh = Math.max(1, Math.abs(q2[1] - q1[1]));
+
+          var off = document.createElement('canvas');
+          off.width = Math.max(1, Math.floor(vp.width * dpr));
+          off.height = Math.max(1, Math.floor(vp.height * dpr));
+          var octx = off.getContext('2d');
+          octx.fillStyle = '#ffffff';
+          octx.fillRect(0, 0, off.width, off.height);
+          await page.render({
+            canvasContext: octx,
+            viewport: vp,
+            transform: [dpr, 0, 0, dpr, 0, 0]
+          }).promise;
+
+          var px = Math.max(0, Math.floor(sx * dpr));
+          var py = Math.max(0, Math.floor(sy * dpr));
+          var pw = Math.max(1, Math.floor(sw * dpr));
+          var ph = Math.max(1, Math.floor(sh * dpr));
+          canvas.width = pw;
+          canvas.height = ph;
+          canvas.style.width = Math.floor(sw) + 'px';
+          canvas.style.height = Math.floor(sh) + 'px';
+          ctx = canvas.getContext('2d');
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, pw, ph);
+          ctx.drawImage(off, px, py, pw, ph, 0, 0, pw, ph);
+        } else {
+          canvas.width = Math.max(1, Math.floor(vp.width * dpr));
+          canvas.height = Math.max(1, Math.floor(vp.height * dpr));
+          canvas.style.width = Math.floor(vp.width) + 'px';
+          canvas.style.height = Math.floor(vp.height) + 'px';
+          ctx = canvas.getContext('2d');
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          await page.render({
+            canvasContext: ctx,
+            viewport: vp,
+            transform: [dpr, 0, 0, dpr, 0, 0]
+          }).promise;
+        }
         syncControls();
       },
       next: function () { return engine.goto(current + 1); },
       prev: function () { return engine.goto(current - 1); },
       seek: function (p) { return engine.goto(1 + p * (doc.numPages - 1)); },
+      refresh: function () { return engine.goto(current); },
       applyTheme: function () { return engine.goto(current); }
     };
+
+    zoomSelect.value = zoomMode;
+    zoomGroup.hidden = false;
+
     var startPage = Number(saved && saved.location) || 1;
     await engine.goto(startPage);
   }
@@ -279,6 +405,17 @@
     localStorage.setItem('reader-font', fontSize);
     refresh();
     syncControls();
+  });
+  zoomSelect.addEventListener('change', function (e) {
+    zoomMode = e.target.value;
+    localStorage.setItem(ZOOM_KEY, zoomMode);
+    if (engine && engine.refresh) engine.refresh();
+  });
+  var pdfResizeTimer;
+  window.addEventListener('resize', function () {
+    if (!engine || engine.type !== 'pdf' || zoomMode === 'actual') return;
+    clearTimeout(pdfResizeTimer);
+    pdfResizeTimer = setTimeout(function () { if (engine.refresh) engine.refresh(); }, 200);
   });
   window.addEventListener('keydown', function (e) {
     if (e.target && e.target.tagName === 'INPUT') return;

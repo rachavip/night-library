@@ -1,13 +1,14 @@
 (function () {
   'use strict';
 
-  var state = { sort: 'added', order: 'desc', q: '', format: '', view: 'grid' };
+  var state = { sort: 'title', order: 'asc', q: '', format: '', view: 'grid' };
   var shelf = document.getElementById('shelf');
   var filters = document.getElementById('filters');
   var empty = document.getElementById('empty');
   var toastEl = document.getElementById('toast');
   var rescanBtn = document.getElementById('rescan');
   var formats = {};
+  var booksById = {};
   var toastTimer;
   var lastScannedAt = null;
   var lastCount = -1;
@@ -47,8 +48,14 @@
   function card(book) {
     var percent = pct(book);
     var href = '/reader?id=' + encodeURIComponent(book.id);
-    var cover = '<span class="cover"><img src="/api/book/' + esc(book.id) + '/cover" alt="" loading="lazy">' +
-      '<span class="format-tag">' + esc(book.format.toUpperCase()) + '</span></span>';
+    // The cover URL carries the stored filename: when a re-scrape finally finds
+    // a real cover, the URL changes and the browser stops showing the cached
+    // generated card instead.
+    var coverSrc = '/api/book/' + esc(book.id) + '/cover' + (book.coverFile ? '?v=' + esc(book.coverFile) : '');
+    var cover = '<span class="cover"><img src="' + coverSrc + '" alt="" loading="lazy">' +
+      '<span class="format-tag">' + esc(book.format.toUpperCase()) + '</span>' +
+      '<span class="cover-more" role="button" tabindex="0" data-id="' + esc(book.id) +
+      '" aria-label="查看《' + esc(book.title) + '》的详情与单独刮削">⋯</span></span>';
     var title = '<span class="book-title">' + esc(book.title || '未命名') + '</span>';
     var author = '<span class="book-author">' + esc(book.author || '佚名') + '</span>';
     var progress = '<span class="progress-line"><i style="width:' + percent + '%"></i></span>';
@@ -70,6 +77,8 @@
     });
     try {
       var data = await api('/api/books?' + params.toString());
+      booksById = {};
+      data.books.forEach(function (b) { booksById[b.id] = b; });
       shelf.className = 'shelf ' + state.view;
       shelf.innerHTML = data.books.map(card).join('');
       empty.hidden = data.books.length > 0;
@@ -78,6 +87,133 @@
       toast(e.message);
     }
   }
+
+  /* ---------- book detail sheet ---------- */
+  var sheet = document.getElementById('book-sheet');
+  var sheetScrim = document.getElementById('book-scrim');
+  var sheetImg = document.getElementById('book-sheet-img');
+  var sheetName = document.getElementById('book-sheet-name');
+  var sheetAuthor = document.getElementById('book-sheet-author');
+  var sheetMeta = document.getElementById('book-sheet-meta');
+  var sheetNote = document.getElementById('book-sheet-note');
+  var sheetRescan = document.getElementById('book-sheet-rescan');
+  var sheetOpen = document.getElementById('book-sheet-open');
+  var sheetClose = document.getElementById('book-sheet-close');
+  var sheetBook = null;
+
+  function sizeText(n) {
+    if (!n) return '—';
+    if (n >= 1073741824) return (n / 1073741824).toFixed(2) + ' GB';
+    if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB';
+    return Math.max(1, Math.round(n / 1024)) + ' KB';
+  }
+
+  // Same idea as the server-side check, kept deliberately small: a title
+  // carrying scripts that never appear on a Chinese shelf is broken bytes.
+  function looksBroken(book) {
+    var t = book.title || '';
+    if (!t.trim()) return true;
+    if (/[\uFFFD\u0000-\u0008\u000E-\u001F]/.test(t)) return true;
+    if (/^þÿ/.test(t)) return true;
+    if (/[\u0400-\u06FF\u0900-\u0DFF\u0E00-\u0EFF\u1000-\u109F\u1100-\u11FF\u3130-\u318F\u3200-\u33FF\uAC00-\uD7AF]/.test(t)) return true;
+    return false;
+  }
+
+  function renderSheet(book) {
+    sheetBook = book;
+    var coverSrc = '/api/book/' + esc(book.id) + '/cover' + (book.coverFile ? '?v=' + esc(book.coverFile) : '');
+    sheetImg.src = coverSrc;
+    sheetImg.alt = '《' + (book.title || '未命名') + '》封面';
+    sheetName.textContent = book.title || '未命名';
+    sheetAuthor.textContent = book.author || '佚名';
+
+    var rows = [
+      ['格式', (book.format || '').toUpperCase()],
+      ['大小', sizeText(book.size)],
+      ['路径', book.path || ''],
+      ['入馆', book.addedAt ? new Date(book.addedAt).toLocaleString('zh-CN') : '—']
+    ];
+    if (book.progress && book.progress.percent) {
+      rows.push(['进度', Math.round(book.progress.percent * 100) + '%']);
+    }
+    sheetMeta.innerHTML = rows.map(function (r) {
+      return '<dt>' + esc(r[0]) + '</dt><dd>' + esc(r[1]) + '</dd>';
+    }).join('');
+
+    var notes = [];
+    if (looksBroken(book)) notes.push('书名看起来是乱码。重新刮削会重新读一遍文件，还是读不出来就用文件名。');
+    if (!book.coverFile) notes.push('这本书没有真实封面（文件里就没带图）。重新刮削会再找一次。');
+    sheetNote.hidden = notes.length === 0;
+    sheetNote.textContent = notes.join(' ');
+  }
+
+  function openSheet(id) {
+    var book = booksById[id];
+    if (!book) return;
+    renderSheet(book);
+    sheetScrim.hidden = false;
+    sheet.hidden = false;
+    sheetClose.focus();
+  }
+
+  function closeSheet() {
+    sheet.hidden = true;
+    sheetScrim.hidden = true;
+    sheetBook = null;
+  }
+
+  async function rescanOne() {
+    if (!sheetBook) return;
+    var id = sheetBook.id;
+    sheetRescan.disabled = true;
+    sheetRescan.textContent = '刮削中…';
+    try {
+      var r = await api('/api/book/' + encodeURIComponent(id) + '/rescan', { method: 'POST' });
+      booksById[r.book.id] = r.book;
+      renderSheet(r.book);
+      // A single-book repair also bumps scannedAt. Absorb it here first, so the
+      // background poll does not fire its own "书房已更新" toast on top of ours.
+      await renderStats();
+      await renderBooks();
+      var bits = [];
+      if (r.changed.title) bits.push('书名改为「' + r.book.title + '」');
+      if (r.changed.author) bits.push('作者改为「' + (r.book.author || '未知') + '」');
+      if (r.changed.cover) bits.push(r.book.coverFile ? '换上了真封面' : '仍然没有封面');
+      toast(bits.length ? '已重刮：' + bits.join('，') : '重刮完成，信息没有变化 · ' + r.durationMs + 'ms');
+    } catch (e) {
+      toast(e.message);
+    } finally {
+      sheetRescan.disabled = false;
+      sheetRescan.textContent = '重新刮削这本';
+    }
+  }
+
+  // The corner button lives inside the card link, so the click has to be
+  // intercepted before it turns into a page navigation.
+  shelf.addEventListener('click', function (e) {
+    var more = e.target && e.target.closest ? e.target.closest('.cover-more') : null;
+    if (!more) return;
+    e.preventDefault();
+    e.stopPropagation();
+    openSheet(more.getAttribute('data-id'));
+  });
+  shelf.addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    var more = e.target && e.target.closest ? e.target.closest('.cover-more') : null;
+    if (!more) return;
+    e.preventDefault();
+    e.stopPropagation();
+    openSheet(more.getAttribute('data-id'));
+  });
+  sheetScrim.addEventListener('click', closeSheet);
+  sheetClose.addEventListener('click', closeSheet);
+  sheetRescan.addEventListener('click', rescanOne);
+  sheetOpen.addEventListener('click', function () {
+    if (sheetBook) location.href = '/reader?id=' + encodeURIComponent(sheetBook.id);
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && !sheet.hidden) closeSheet();
+  });
 
   function renderFilters() {
     var items = [['', '全部', Object.values(formats).reduce(function (a, b) { return a + b; }, 0)]];
