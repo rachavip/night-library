@@ -23,6 +23,10 @@ const DEFAULTS = {
   theme: 'night',
   folders: [],
   background: { enabled: false, data: '', blur: 0, dim: 0.55 },
+  // Scan schedule is editable in the settings drawer. compose env vars can
+  // still force a value for declarative NAS deploys; otherwise the saved
+  // value wins. intervalMinutes 0 means scheduled scans are off.
+  scan: { onStart: true, intervalMinutes: 60 },
   // AnyListen is embedded as a web page by default - it already has its own
   // player UI, so no audio proxy is needed. "subsonic" keeps the lightweight
   // random-play bar for Navidrome-style servers.
@@ -55,6 +59,15 @@ function applyEnv(settings, env) {
   }
   if (MUSIC_MODES.has(mode)) out.music.mode = mode;
   out.music.urlFromEnv = Boolean(url);
+
+  // Scan schedule: env wins when explicitly set, same priority as music.
+  const scanOn = cleanString(e.SCAN_ON_START, 4, '');
+  if (scanOn === '0' || scanOn === '1') out.scan.onStart = scanOn === '1';
+  out.scan.onStartFromEnv = scanOn === '0' || scanOn === '1';
+  const intervalRaw = cleanString(e.SCAN_INTERVAL_MINUTES, 10, '');
+  const interval = intervalRaw === '' ? null : clampInterval(intervalRaw, null);
+  if (interval !== null) out.scan.intervalMinutes = interval;
+  out.scan.intervalFromEnv = interval !== null;
   return out;
 }
 
@@ -95,6 +108,15 @@ function file(cfg) {
 function clamp(value, min, max, fallback) {
   const n = Number(value);
   return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback;
+}
+
+// Minutes between automatic scans. 0 turns the timer off; fractions are kept
+// (useful for short test intervals) and 10080 (7 days) is the upper bound.
+function clampInterval(value, fallback) {
+  if (value == null || value === '') return fallback;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return fallback;
+  return Math.min(n, 10080);
 }
 
 function cleanString(value, max, fallback) {
@@ -145,6 +167,9 @@ async function load(cfg) {
     out.background.data = cleanString(bg.data, 500, '');
     out.background.blur = clamp(bg.blur, 0, 20, 0);
     out.background.dim = clamp(bg.dim, 0, 0.9, 0.55);
+    const scan = raw.scan || {};
+    if (Object.prototype.hasOwnProperty.call(scan, 'onStart')) out.scan.onStart = Boolean(scan.onStart);
+    out.scan.intervalMinutes = clampInterval(scan.intervalMinutes, DEFAULTS.scan.intervalMinutes);
     const music = raw.music || {};
     out.music.mode = MUSIC_MODES.has(music.mode) ? music.mode : 'embed';
     out.music.enabled = Boolean(music.enabled);
@@ -191,6 +216,12 @@ function merge(current, input) {
   if (Object.prototype.hasOwnProperty.call(bg, 'data')) out.background.data = cleanString(bg.data, 500, '');
   if (Object.prototype.hasOwnProperty.call(bg, 'blur')) out.background.blur = clamp(bg.blur, 0, 20, 0);
   if (Object.prototype.hasOwnProperty.call(bg, 'dim')) out.background.dim = clamp(bg.dim, 0, 0.9, 0.55);
+
+  const scan = src.scan || {};
+  if (Object.prototype.hasOwnProperty.call(scan, 'onStart')) out.scan.onStart = Boolean(scan.onStart);
+  if (Object.prototype.hasOwnProperty.call(scan, 'intervalMinutes')) {
+    out.scan.intervalMinutes = clampInterval(scan.intervalMinutes, out.scan.intervalMinutes);
+  }
 
   const music = src.music || {};
   if (MUSIC_MODES.has(music.mode)) out.music.mode = music.mode;

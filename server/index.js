@@ -7,6 +7,7 @@ const library = require('./library');
 const converter = require('./convert');
 const settingsStore = require('./settings');
 const music = require('./music');
+const versionStore = require('./version');
 
 const ROOT = path.resolve(__dirname, '..');
 const cfg = {
@@ -126,6 +127,17 @@ let nextScanAt = null;
 let scanTimer = null;
 let settings = settingsStore.clone ? settingsStore.clone(settingsStore.DEFAULTS) : settingsStore.DEFAULTS;
 
+/* ---------- version ---------- */
+// Version is baked into the image via version.json; the header reads this.
+app.get('/api/version', (req, res) => {
+  res.json(versionStore.local());
+});
+// Compares the running version against version.json on GitHub. Never fails
+// the request - network problems are surfaced as a normal result body.
+app.get('/api/version/check', async (req, res) => {
+  res.json(await versionStore.checkRemote());
+});
+
 /* ---------- settings ---------- */
 app.get('/api/settings', (req, res) => {
   res.json(settingsStore.forBrowser(settings));
@@ -136,6 +148,8 @@ app.put('/api/settings', async (req, res) => {
   settings = settingsStore.applyEnv(settingsStore.merge(settings, req.body), process.env);
   try {
     await settingsStore.save(cfg, settings);
+    // A changed interval takes effect right away - no container restart.
+    applyScanSettings();
     res.json(settingsStore.forBrowser(settings));
   } catch (e) {
     res.status(500).json({ error: '保存设置失败：' + e.message });
@@ -321,7 +335,8 @@ app.get('/api/stats', (req, res) => {
     scanOnStart: scanOnStart,
     autoScanMinutes: scanIntervalMinutes,
     nextScanAt: nextScanAt,
-    lastScanError: lastScanError
+    lastScanError: lastScanError,
+    scanLimits: { min: 1, max: 10080 }
   });
 });
 
@@ -472,13 +487,15 @@ app.use(express.static(path.join(ROOT, 'public'), { index: false }));
 app.get('/', (req, res) => res.sendFile(path.join(ROOT, 'public', 'index.html')));
 app.get('/reader', (req, res) => res.sendFile(path.join(ROOT, 'public', 'reader.html')));
 
-// Minutes between automatic scans. 0 disables the timer (startup scan still
-// runs). Non-numeric or negative values fall back to the default.
-function parseScanInterval(raw) {
-  if (raw == null || raw === '') return 60;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n < 0) return 60;
-  return n;
+// Pull the schedule from persisted settings (compose env values are already
+// applied on top). Saving settings calls this so a changed interval takes
+// effect immediately; onStart is only acted on at boot.
+function applyScanSettings() {
+  const scan = settings.scan || {};
+  const n = Number(scan.intervalMinutes);
+  scanIntervalMinutes = Number.isFinite(n) && n >= 0 ? Math.min(n, 10080) : 60;
+  scanOnStart = scan.onStart !== false;
+  scheduleScans();
 }
 
 function scheduleScans() {
@@ -503,8 +520,7 @@ async function start() {
   currentIndex = await library.loadIndex(cfg);
   progress = await library.loadProgress(cfg);
 
-  scanIntervalMinutes = parseScanInterval(process.env.SCAN_INTERVAL_MINUTES);
-  scanOnStart = String(process.env.SCAN_ON_START || '1') !== '0';
+  applyScanSettings();
 
   // Serve the cached shelf immediately, then refresh in the background so a
   // large library never leaves the web UI hanging at startup.
