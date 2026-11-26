@@ -30,14 +30,15 @@
       </label>
       <label class="sort-label">排序
         <select id="sort" aria-label="排序方式">
+          <option value="title" selected>书名</option>
+          <option value="path">文件名</option>
           <option value="added">最近添加</option>
-          <option value="title">书名</option>
           <option value="author">作者</option>
           <option value="size">文件大小</option>
           <option value="format">格式</option>
         </select>
       </label>
-      <button class="ghost-btn" id="order" aria-label="切换升序或降序" title="切换升降序">降序</button>
+      <button class="ghost-btn" id="order" aria-label="切换升序或降序" title="切换升降序">升序</button>
       <div class="view-switch" role="group" aria-label="视图切换">
         <button type="button" data-view="grid" aria-pressed="true">书架</button>
         <button type="button" data-view="list" aria-pressed="false">列表</button>
@@ -62,6 +63,24 @@
       <button class="ghost-btn" type="button" id="empty-rescan">重新刮削</button>
     </div>
   </main>
+
+  <!-- book detail sheet: opened from the corner button on a cover -->
+  <div class="sheet-scrim" id="book-scrim" hidden></div>
+  <div class="book-sheet" id="book-sheet" role="dialog" aria-modal="true" aria-labelledby="book-sheet-name" hidden>
+    <button type="button" class="sheet-close" id="book-sheet-close" aria-label="关闭书籍详情">×</button>
+    <div class="book-sheet-cover"><img id="book-sheet-img" alt="" loading="lazy"></div>
+    <div class="book-sheet-main">
+      <h2 class="book-sheet-name" id="book-sheet-name">—</h2>
+      <p class="book-sheet-author" id="book-sheet-author"></p>
+      <p class="book-sheet-note" id="book-sheet-note" hidden></p>
+      <dl class="book-sheet-meta" id="book-sheet-meta"></dl>
+      <div class="book-sheet-actions">
+        <button type="button" class="ghost-btn" id="book-sheet-open">打开阅读</button>
+        <button type="button" class="primary-btn" id="book-sheet-rescan">重新刮削这本</button>
+      </div>
+      <p class="book-sheet-hint">重新刮削会丢掉这本书的缓存，重新读取文件本身的标题、作者和封面，不会跳过。</p>
+    </div>
+  </div>
 
   <!-- settings drawer -->
   <div class="drawer-scrim" id="drawer-scrim" hidden></div>

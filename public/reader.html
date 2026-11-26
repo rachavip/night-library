@@ -16,6 +16,14 @@
       <span id="book-author"></span>
     </div>
     <div class="controls">
+      <div class="zoom-group" id="zoom-group" hidden>
+        <select id="zoom-mode" aria-label="缩放方式">
+          <option value="fit-width">匹配宽度</option>
+          <option value="fit-page">匹配页面</option>
+          <option value="fit-visible">匹配可见</option>
+          <option value="actual">实际大小</option>
+        </select>
+      </div>
       <button type="button" id="theme-btn" title="切换阅读主题">夜读</button>
       <div class="font-group" role="group" aria-label="字号">
         <button type="button" id="font-down" aria-label="减小字号">−</button>
