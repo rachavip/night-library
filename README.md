@@ -1,0 +1,142 @@
+# 夜读 · NAS 电子书馆
+
+部署在 NAS 上的私人网页版电子书管理系统。刮削本地文件夹、按书名/作者/格式/时间排序、直接在浏览器里阅读。界面是「夜读书房」：深墨蓝底、暖纸色文字、一束琥珀灯光。
+
+## 飞牛 NAS 部署（已按你的路径配好）
+
+项目文件夹叫 **EBooks**，部署在 `/vol1/1000/docker/ebooks`。`docker-compose.yml` 里的挂载路径已经写好，不需要再改参数：
+
+```yaml
+- /vol1:/vol1:ro        # 整个 vol1 挂进容器且路径一致，网页里就能添加任意书籍文件夹
+- ./data:/app/data      # 索引/封面/缓存/进度
+```
+
+环境变量 `BOOKS_DIR: /vol1/1000/docker/ebooks` 是默认书籍文件夹。容器名 `ebooks`，访问端口 `8080`。
+
+> 为什么挂整个 `/vol1`：这样网页设置里填的 NAS 路径（如 `/vol1/1000/小说`）在容器内也真实存在，刮削才能找到文件。全程只读，不会改动你的原书。
+
+### 方式一：GitHub 镜像，一键部署（推荐）
+
+把镜像发布到自己的 GitHub Container Registry 后，NAS 上只需要一个 `docker-compose.yml`，不用上传源码：
+
+1. 按 **[DEPLOY_GITHUB.md](DEPLOY_GITHUB.md)** 把代码推到 GitHub，等 Actions 构建出镜像
+2. 把项目里的 `docker-compose.yml` 上传到 `/vol1/1000/docker/ebooks`
+3. 只改 `image:` 那一行，填你的镜像地址：`ghcr.io/你的用户名/night-library:latest`
+4. 执行：
+
+   ```bash
+   cd /vol1/1000/docker/ebooks
+   docker compose pull
+   docker compose up -d
+   ```
+
+以后更新只要 `git push`，再到 NAS 上 `docker compose pull && docker compose up -d` 即可。
+
+### 方式二：本地构建（不经过 GitHub）
+
+把整个项目文件夹（含 `docker-compose.build.yml`、`Dockerfile`、`server/`、`public/`、`scripts/`、`package.json`、`package-lock.json`）上传到 `/vol1/1000/docker/ebooks`，然后：
+
+```bash
+cd /vol1/1000/docker/ebooks
+docker compose -f docker-compose.build.yml up -d --build
+```
+
+### 方式三：飞牛 Docker 图形界面
+
+「Docker」→「项目」→「创建项目」，项目路径选 `/vol1/1000/docker/ebooks`，compose 文件选目录里的 `docker-compose.yml`，点部署。镜像方式在图形界面里最顺；本地构建请用方式二。
+
+> 首次构建或拉取会安装/下载 Calibre（用于 MOBI/AZW3 转换），镜像较大、耗时几分钟，属正常现象。
+
+### 放书的位置 / 添加电子书文件夹
+
+默认刮削 `/vol1/1000/docker/ebooks`。要把 NAS 上其他位置的书也收进来，不用改 compose、不用重建容器：
+
+1. 点右上角 **⚙** →「电子书文件夹」
+2. 填 NAS 上的绝对路径，例如 `/vol1/1000/小说`，点「添加」（会先检查容器内能否访问）
+3. 点「保存设置」——文件夹有变化时会自动刮削，也可以手动点顶部「刮削」
+
+可以添加多个文件夹，移除后保存同样会重新刮削。扫描器会自动跳过 `data/`、`node_modules/` 等项目目录，不会把索引和缓存误扫成书。首次启动会自动刮削一次。
+
+> 添加前确认该路径确实在 `/vol1` 下面（因为只挂了 `/vol1`）。如果你的书在其他存储池（如 `/vol2`），把 compose 里的挂载再加一行 `- /vol2:/vol2:ro` 并重新 `docker compose up -d` 即可。
+
+## 书房设置（改名 / 主题 / 背景 / 音乐）
+
+点右上角 **⚙** 打开设置抽屉，改完点「保存设置」。
+
+- **电子书文件夹**：增删要刮削的 NAS 书籍目录，添加时校验路径，保存后自动刮削（详见上文）。
+- **名称**：系统名称与副标题可改，书架标题、页签和阅读器的返回按钮会同步更新。
+- **主题**：夜读（墨蓝+琥珀，默认）、纸笺（浅色）、墨影（近黑+香槟金）、青屿（深青+薄荷绿）。
+- **背景图片**：可以「选择本地图片」上传，或填书籍目录里图片的相对路径（例如 `壁纸/书房.jpg`）。暗度和虚化可拖动调节，暗度会把背景压暗以保证文字可读；「清除」后记得保存。上传的图片存在 `data/backgrounds/`。
+- **音乐**：默认「网页嵌入」模式，已预填你的 AnyListen 地址 `http://192.168.0.111:9500`。点顶栏 **♫** 直接打开播放器听歌，收起面板后音乐继续播放，可以边看书边听。
+
+### 音乐 · 网页嵌入（默认，AnyListen）
+
+- 设置里选 **网页嵌入**，服务地址填完整 URL（如 `http://192.168.0.111:9500`），可点「测试连接」确认能打开。
+- ♫ 打开的是 AnyListen 自带界面，搜索、歌单、播放控制都在里面，不需要额外配置账号或协议。
+- 浏览器直连 AnyListen，不经过本服务代理；地址必须是你浏览器能访问到的 IP 和端口。
+- 若以后本系统改用 HTTPS 访问而 AnyListen 仍是 HTTP，浏览器会因「混合内容」拦截内嵌页面——两边保持同为 HTTP，或给 AnyListen 也配 HTTPS。
+
+### 音乐 · 随机播放（Subsonic）
+
+在设置里切换为 **随机播放**，兼容 Navidrome、Airsonic、Gonic 等：
+- 服务地址填 `IP:端口`，例如 Navidrome 默认 `192.168.1.10:4533`（不用写 `http://`）
+- 填写用户名和密码；密码只保存在容器内的 `data/settings.json`，接口返回时会打码
+- 浏览器不直连音乐服务，由本服务代理，避开跨域问题
+- ♫ 会拉取 50 首随机歌曲打乱播放，支持上一首/下一首/暂停/音量；歌放完自动切下一首
+
+## 格式支持
+
+| 格式 | 网页阅读 | 说明 |
+| --- | --- | --- |
+| PDF | ✅ | pdf.js 逐页渲染，支持进度与缩放自适应 |
+| EPUB | ✅ | epub.js 渲染，支持章节跳转与字号 |
+| TXT | ✅ | 自动识别 UTF-8 / GB18030，按视口重新分页 |
+| MOBI | ✅ | 由镜像内的 Calibre 转为 EPUB 后阅读，转换结果缓存 |
+| AZW3 | ✅ | 同上 |
+
+MOBI / AZW3 的转换只发生在第一次打开时，之后走缓存。转换文件写在 `data/converted/`，不会碰你的原始书籍（书籍目录以只读方式挂载）。
+
+## 刮削规则
+
+1. **优先读书籍内嵌元数据**：EPUB 读 OPF（书名、作者、语言、简介、封面），PDF 读文档信息，MOBI/AZW3 用 Calibre 的 `ebook-meta`，TXT 取第一行作标题。
+2. **文件名兜底**：识别 `作者 - 书名`、`[作者] 书名`、`作者《书名》` 等常见写法。
+3. **封面**：EPUB 内嵌封面会被提取；其他格式按书名/作者生成一张字体封面（琥珀书脊 + 宋体书名）。
+
+书架支持按 **最近添加 / 书名 / 作者 / 文件大小 / 格式** 排序（中文本地化排序），升降序切换，格式筛选，以及书名/作者/路径搜索。阅读进度保存在 `data/progress.json`。
+
+## 配置项
+
+在 `docker-compose.yml` 的 `environment` 里可改：
+
+| 变量 | 默认值 | 作用 |
+| --- | --- | --- |
+| `BOOKS_DIR` | `/books` | 容器内书籍目录 |
+| `DATA_DIR` | `/app/data` | 索引、封面、转换缓存、进度 |
+| `PORT` | `8080` | 监听端口 |
+| `TZ` | `Asia/Shanghai` | 时区 |
+| `SCAN_ON_START` | 未设置 | 设为 `1` 则每次启动都重新刮削 |
+
+## 本地开发（不跑 Docker）
+
+```bash
+npm install
+SCAN_ON_START=1 npm start
+```
+
+不带环境变量时，默认扫描项目内的 `demo-books/` 示例目录，索引写在 `data/`。本机没有 Calibre 时，MOBI/AZW3 会提示需要安装——Docker 镜像里已包含。
+
+## 目录结构
+
+```
+night-library/
+├── server/           扫描、刮削、转换、API
+├── public/           书库界面与阅读器（含本地化的 pdf.js / epub.js）
+├── demo-books/       本地预览用的示例书
+├── data/             运行时生成：library.json / settings.json / covers / converted / backgrounds / progress.json
+├── Dockerfile
+└── docker-compose.yml
+```
+
+## 设计说明
+
+配色、字体和版式 token 在 `public/css/tokens.css`：深墨蓝 `#0B121C`、面板 `#111C29`、暖纸色 `#EDE6D8`、琥珀 `#E9A23B`。琥珀只用于「正在发生」的事——阅读进度、焦点、激活态。书库是夜读模式，阅读器默认是纸张模式（长时间阅读浅色更省眼），可一键切回夜读。

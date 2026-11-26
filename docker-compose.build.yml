@@ -1,0 +1,20 @@
+name: ebooks-build
+
+# 本地构建版：不经过 GitHub，直接在放着源码的机器上构建镜像。
+# 用法：docker compose -f docker-compose.build.yml up -d --build
+services:
+  ebooks:
+    build: .
+    image: night-library:local
+    container_name: ebooks
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - /vol1:/vol1:ro
+      - ./data:/app/data
+    environment:
+      TZ: Asia/Shanghai
+      BOOKS_DIR: /vol1/1000/docker/ebooks
+      DATA_DIR: /app/data
+      PORT: "8080"
