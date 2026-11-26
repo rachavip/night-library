@@ -159,18 +159,78 @@ function scrapePdf(file) {
   }).catch(() => ({}));
 }
 
-function scrapeWithCalibre(file) {
+/* Detect a real image from its magic bytes - ebook-meta writes the source
+ * format regardless of the filename extension we give it. */
+function imageExt(buf) {
+  if (!buf || buf.length < 12) return '';
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'jpg';
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'png';
+  if (buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') return 'webp';
+  if (buf.toString('ascii', 0, 3) === 'GIF') return 'gif';
+  return '';
+}
+
+/* One ebook-meta call reads metadata AND exports the cover, so adding covers
+ * does not double the number of processes spawned per book. */
+function scrapeWithCalibre(file, coverDir, id) {
   return new Promise(resolve => {
-    if (process.platform === 'win32' && !process.env.CALIBRE_PATH) return resolve({});
-    execFile('ebook-meta', [file], { timeout: 15000 }, (err, stdout) => {
-      if (err || !stdout) return resolve({});
-      const get = label => {
-        const m = stdout.match(new RegExp('^' + label + '\\s*:\\s*(.+)$', 'im'));
-        return m ? clean(m[1]) : '';
-      };
-      resolve({ title: get('Title'), author: get('Author(s)') || get('Author'), language: get('Language') });
+    if (!coverDir || (process.platform === 'win32' && !process.env.CALIBRE_PATH)) {
+      return resolve({ coverFile: '' });
+    }
+    const tmp = path.join(coverDir, id + '.calibre.jpg');
+    execFile('ebook-meta', [file, '--get-cover=' + tmp], { timeout: 20000, maxBuffer: 1024 * 1024 }, async (err, stdout) => {
+      const meta = { coverFile: '' };
+      if (stdout) {
+        const get = label => {
+          const m = stdout.match(new RegExp('^' + label + '\\s*:\\s*(.+)$', 'im'));
+          return m ? clean(m[1]) : '';
+        };
+        meta.title = get('Title');
+        meta.author = get('Author(s)') || get('Author');
+        meta.language = get('Language');
+      }
+      // ebook-meta can exit non-zero yet still have written the cover, so
+      // check the file regardless of err.
+      try {
+        const buf = await fsp.readFile(tmp);
+        const ext = imageExt(buf);
+        if (ext) {
+          const out = path.join(coverDir, id + '.' + ext);
+          await fsp.writeFile(out, buf);
+          meta.coverFile = path.basename(out);
+        }
+      } catch (e) { /* this book has no embedded cover */ }
+      try { await fsp.unlink(tmp); } catch (e) { /* ignore */ }
+      resolve(meta);
     });
   });
+}
+
+/* TXT files carry no cover of their own, but many NAS libraries keep a
+ * matching image next to the book. Pick it up so those shelves are not blank. */
+async function siblingCover(file, coverDir, id) {
+  if (!coverDir) return '';
+  const dir = path.dirname(file);
+  const base = path.basename(file, path.extname(file));
+  const candidates = [
+    base + '.jpg', base + '.jpeg', base + '.png', base + '.webp',
+    path.join(base, 'cover.jpg'), path.join(base, 'cover.png')
+  ];
+  for (const name of candidates) {
+    try {
+      const src = path.join(dir, name);
+      const stat = await fsp.stat(src);
+      if (!stat.isFile() || stat.size < 128) continue;
+      const ext = path.extname(src).slice(1).toLowerCase();
+      const buf = await fsp.readFile(src);
+      const good = imageExt(buf) || (ext === 'jpeg' ? 'jpg' : ext);
+      if (!['jpg', 'png', 'webp', 'gif'].includes(good)) continue;
+      const out = path.join(coverDir, id + '.' + good);
+      await fsp.writeFile(out, buf);
+      return path.basename(out);
+    } catch (e) { /* try the next candidate */ }
+  }
+  return '';
 }
 
 function scrapeTxt(file) {
@@ -243,10 +303,27 @@ async function buildBook(entry, cfg, folder) {
   const guessed = guessFromFilename(base);
   let scraped = {};
   try {
-    if (ext === 'epub') scraped = await scrapeEpub(full, cfg.coverDir, id);
-    else if (ext === 'pdf') scraped = await scrapePdf(full);
-    else if (ext === 'mobi' || ext === 'azw3') scraped = await scrapeWithCalibre(full);
-    else if (ext === 'txt') scraped = await scrapeTxt(full);
+    if (ext === 'epub') {
+      scraped = await scrapeEpub(full, cfg.coverDir, id);
+      // EPUB without a declared cover: let Calibre render one from page 1.
+      if (!scraped.coverFile) {
+        const cal = await scrapeWithCalibre(full, cfg.coverDir, id);
+        if (cal.coverFile) scraped.coverFile = cal.coverFile;
+        if (!scraped.title && cal.title) scraped.title = cal.title;
+        if (!scraped.author && cal.author) scraped.author = cal.author;
+      }
+    } else if (ext === 'pdf') {
+      scraped = await scrapePdf(full);
+      const cal = await scrapeWithCalibre(full, cfg.coverDir, id);
+      if (cal.coverFile) scraped.coverFile = cal.coverFile;
+      if (!scraped.title && cal.title) scraped.title = cal.title;
+      if (!scraped.author && cal.author) scraped.author = cal.author;
+    } else if (ext === 'mobi' || ext === 'azw3') {
+      scraped = await scrapeWithCalibre(full, cfg.coverDir, id);
+    } else if (ext === 'txt') {
+      scraped = await scrapeTxt(full);
+      scraped.coverFile = await siblingCover(full, cfg.coverDir, id);
+    }
   } catch (e) {
     scraped = {};
   }
