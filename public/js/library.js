@@ -20,6 +20,8 @@
   var continueMeta = document.getElementById('continue-meta');
   var continueList = document.getElementById('continue-list');
   var readingLine = document.getElementById('reading-line');
+  var rail = document.getElementById('rail');
+  var layoutEl = document.getElementById('layout');
   var formats = {};
   var booksById = {};
   var shelves = [];
@@ -150,12 +152,22 @@
   }
 
   /* ---------- continue reading ---------- */
+  // The rail is a fixed 296px column. If nothing has been opened yet there is
+  // nothing to put in it but a one-line hint, so it collapses and the shelf
+  // takes the full width instead of leaving a dead strip on the left.
+  function syncRail() {
+    var bare = continueBox.hidden;
+    if (rail) rail.hidden = bare;
+    if (layoutEl) layoutEl.classList.toggle('is-bare', bare);
+  }
+
   async function renderContinue() {
     try {
       var data = await api('/api/books?status=reading&sort=recent&limit=6');
       var books = data.books || [];
       if (!books.length) {
         continueBox.hidden = true;
+        syncRail();
         return;
       }
       var main = books[0];
@@ -183,8 +195,10 @@
           '<span>' + esc(book.title || '未命名') + '</span>' +
           '<em>' + (percent ? percent + '%' : '刚开始') + '</em></a>';
       }).join('') || statRows();
+      syncRail();
     } catch (e) {
       continueBox.hidden = true;
+      syncRail();
     }
   }
 
@@ -320,6 +334,7 @@
     } catch (e) {
       summary = null;
       readingLine.hidden = true;
+      syncRail();
       return;
     }
     var bits = [];
@@ -330,6 +345,7 @@
     readingLine.hidden = false;
     readingLine.innerHTML = '<span>' + esc(bits.length ? bits.join(' · ') : '还没有阅读记录，翻开一本书就开始计时') +
       '</span><em>阅读统计 ›</em>';
+    syncRail();
     renderShelves();
     // The side column falls back to these numbers when there is only one book
     // in progress, and that fallback needs the summary that just arrived.
@@ -394,8 +410,9 @@
     statsScrim.hidden = true;
   }
 
+  // 阅读统计 is reached from the reading line in the rail now; the old header
+  // button would not exist if the rail collapsed.
   readingLine.addEventListener('click', openStats);
-  document.getElementById('reading-stats-open').addEventListener('click', openStats);
   document.getElementById('stats-close').addEventListener('click', closeStats);
   statsScrim.addEventListener('click', closeStats);
 
