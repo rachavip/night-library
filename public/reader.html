@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#F5F0E4">
+  <title>阅读 · 夜读</title>
+  <link rel="stylesheet" href="/css/tokens.css">
+  <link rel="stylesheet" href="/css/reader.css">
+</head>
+<body data-theme="paper">
+  <header class="reader-bar">
+    <a class="back" href="/" aria-label="返回书房">← <span id="back-label">书房</span></a>
+    <div class="book-meta">
+      <h1 id="book-title">正在打开…</h1>
+      <span id="book-author"></span>
+    </div>
+    <div class="controls">
+      <button type="button" id="theme-btn" title="切换阅读主题">夜读</button>
+      <div class="font-group" role="group" aria-label="字号">
+        <button type="button" id="font-down" aria-label="减小字号">−</button>
+        <span id="font-size">18</span>
+        <button type="button" id="font-up" aria-label="增大字号">+</button>
+      </div>
+      <span id="page-info"></span>
+    </div>
+  </header>
+
+  <main class="viewer" id="viewer" aria-label="阅读内容"></main>
+
+  <footer class="reader-foot">
+    <button type="button" id="prev">上一页</button>
+    <input type="range" id="progress-track" min="0" max="100" value="0" aria-label="阅读进度">
+    <button type="button" id="next">下一页</button>
+  </footer>
+
+  <div class="reader-error" id="reader-error" hidden>
+    <h2>这本书暂时打不开</h2>
+    <p id="reader-error-text"></p>
+    <a href="/">回到书房</a>
+  </div>
+
+  <script src="/vendor/pdf.min.js"></script>
+  <script src="/vendor/epub.min.js"></script>
+  <script src="/js/reader.js"></script>
+</body>
+</html>
