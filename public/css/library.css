@@ -45,14 +45,14 @@ button { cursor: pointer; }
   letter-spacing: 3px;
   white-space: nowrap;
 }
-.brand-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--amber);
-  box-shadow: 0 0 12px var(--amber);
-  transform: translateY(-2px);
+.brand-logo {
+  width: 30px;
+  height: 30px;
+  object-fit: contain;
+  flex: none;
+  transform: translateY(3px);
 }
+@media (max-width: 720px) { .brand-logo { width: 24px; height: 24px; } }
 .brand-sub {
   font-family: var(--sans);
   font-size: 12px;
