@@ -72,7 +72,7 @@
         <p class="hint">填写 NAS 上书籍所在的绝对路径（容器内路径需一致，飞牛上一般是 /vol1/1000/…）。可添加多个，改完点「刮削」即可收录。</p>
         <ul class="folder-list" id="folder-list"></ul>
         <div class="folder-add">
-          <input id="folder-input" type="text" placeholder="/vol1/1000/docker/ebooks" aria-label="新增电子书文件夹路径">
+          <input id="folder-input" type="text" placeholder="/vol1/1000/EBook" aria-label="新增电子书文件夹路径">
           <button type="button" class="ghost-btn" id="folder-add-btn">添加</button>
         </div>
         <div class="folder-result" id="folder-result"></div>
@@ -103,8 +103,9 @@
           <button type="button" class="mode-card" data-mode="embed" role="radio" aria-checked="true"><strong>网页嵌入</strong><span>AnyListen 等，打开即用自带播放器</span></button>
           <button type="button" class="mode-card" data-mode="subsonic" role="radio" aria-checked="false"><strong>随机播放</strong><span>Navidrome 等，底部轻量播放条</span></button>
         </div>
-        <p class="hint" id="music-hint">填入 AnyListen 的访问地址，点顶栏 ♫ 即可打开听歌。</p>
-        <label class="field">服务地址<input id="music-url" type="text" placeholder="http://192.168.0.111:9500"></label>
+        <p class="hint" id="music-hint">给服务填地址，点顶栏 ♫ 打开播放器；在播放器左上角切换服务。</p>
+        <p class="hint env-hint" id="music-env-hint" hidden>当前地址由 docker-compose.yml 的 MUSIC_URL 指定，优先级高于此处。要改地址请改 compose 后执行 docker compose up -d。</p>
+        <div class="music-services" id="music-services"></div>
         <div id="music-subsonic-fields" hidden>
           <div class="field-row">
             <label class="field">用户名<input id="music-user" type="text" autocomplete="username"></label>
@@ -112,9 +113,10 @@
           </div>
         </div>
         <div class="button-row">
-          <button type="button" class="ghost-btn" id="music-test">测试连接</button>
+          <button type="button" class="ghost-btn" id="music-test">测试当前服务</button>
           <span class="test-result" id="music-test-result"></span>
         </div>
+        <p class="hint" id="music-test-hint" hidden></p>
       </section>
     </div>
     <div class="drawer-foot">
@@ -123,13 +125,33 @@
     </div>
   </aside>
 
-  <!-- embedded web player (AnyListen etc.) -->
+  <!-- embedded web players (AnyListen, music-dl, Songloft, MelodyHub, Solara ...) -->
   <div class="music-panel" id="music-panel" role="dialog" aria-modal="true" aria-label="音乐播放器" aria-hidden="true" inert>
     <div class="music-panel-bar">
-      <span class="music-panel-title" id="music-panel-title">♫ 音乐</span>
-      <button type="button" class="icon-btn" id="music-panel-close" aria-label="收起音乐面板" title="收起">×</button>
+      <div class="music-panel-heading">
+        <span class="music-panel-title" id="music-panel-title">♫ 音乐</span>
+        <select id="music-service-select" class="music-service-select" aria-label="切换音乐服务" hidden></select>
+      </div>
+      <div class="music-panel-actions">
+        <button type="button" class="icon-btn" id="music-popout" aria-label="在新窗口打开" title="在新窗口打开">↗</button>
+        <button type="button" class="icon-btn" id="music-reload" aria-label="重新加载播放器" title="重新加载">⟳</button>
+        <button type="button" class="icon-btn" id="music-panel-close" aria-label="收起音乐面板" title="收起">×</button>
+      </div>
     </div>
-    <iframe id="music-frame" title="音乐播放器" allow="autoplay; fullscreen; encrypted-media" referrerpolicy="no-referrer"></iframe>
+    <div class="music-stage" id="music-stage">
+      <div class="music-notice" id="music-notice" hidden>
+        <span id="music-notice-text"></span>
+        <div class="music-notice-actions" id="music-notice-actions"></div>
+      </div>
+      <iframe id="music-frame" title="音乐播放器" allow="autoplay; fullscreen; encrypted-media; clipboard-write" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>
+      <div class="music-state" id="music-state" hidden>
+        <div class="music-state-card">
+          <strong id="music-state-title"></strong>
+          <p id="music-state-text"></p>
+          <div class="music-state-actions" id="music-state-actions"></div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- lightweight Subsonic player -->
