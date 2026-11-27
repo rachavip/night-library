@@ -55,6 +55,18 @@
     return v;
   }
 
+  // Serve the embedded player through our own origin so the transport buttons
+  // can reach into it. Cross-origin iframes are opaque to the parent page.
+  function proxiedUrl(url) {
+    if (!url) return '';
+    try {
+      var u = new URL(url);
+      return '/music-proxy' + (u.pathname === '/' ? '/' : u.pathname) + u.search + u.hash;
+    } catch (e) {
+      return url;
+    }
+  }
+
   function cleanHost(url) {
     try { return new URL(url).host; }
     catch (e) { return String(url || '').replace(/^https?:\/\//, '').split('/')[0]; }
@@ -246,7 +258,7 @@
       }
     };
 
-    frame.setAttribute('src', currentUrl);
+    frame.setAttribute('src', proxiedUrl(currentUrl));
 
     loadTimer = setTimeout(function () {
       if (token !== loadToken || settled) return;
@@ -278,11 +290,88 @@
     probeAndLoad(0);
   }
 
-  // The transport buttons cannot drive AnyListen - it is a separate site with
-  // no control API. They open the panel and hand focus to the iframe so the
-  // keyboard (space / arrows) works inside the real player.
+  // The player is served through /music-proxy, so it shares our origin and
+  // its DOM is readable. Click its own control buttons - no guessing about
+  // player state, the player itself decides what play/pause/next means.
+  function playerFrameDoc() {
+    try { return frame.contentDocument || (frame.contentWindow && frame.contentWindow.document); }
+    catch (e) { return null; }
+  }
+
+  function clickPlayerLabel(labels) {
+    var doc = playerFrameDoc();
+    if (!doc) return false;
+    for (var i = 0; i < labels.length; i++) {
+      var btn = doc.querySelector('[aria-label="' + labels[i] + '"]');
+      if (btn) {
+        btn.click();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Keep the shelf button in sync with the player's real state by watching
+  // for the aria-label flipping between 播放 and 暂停.
+  var playObserver = null;
+  function watchPlayerState() {
+    if (playObserver || !window.MutationObserver) return;
+    var doc = playerFrameDoc();
+    if (!doc || !doc.body) return;
+    playObserver = new MutationObserver(function () {
+      var pause = doc.querySelector('[aria-label="暂停"]');
+      toggle.textContent = pause ? '❚❚' : '▶';
+    });
+    playObserver.observe(doc.body, { subtree: true, attributes: true, attributeFilter: ['aria-label'] });
+  }
+
+  function playerControl(action) {
+    if (mode !== 'embed') return;
+    // The iframe is loaded once on the first open, then kept alive. Later
+    // transport clicks only drive the player - the panel stays closed so the
+    // shelf keeps playing while you browse books.
+    var firstLoad = !frame.getAttribute('src');
+    if (firstLoad) openPanel();
+    setTimeout(function () {
+      var ok = false;
+      if (action === 'play') {
+        var doc = playerFrameDoc();
+        // If it is already playing, the 暂停 button is showing - clicking the
+        // 播放 button would be a no-op, so toggle instead.
+        ok = clickPlayerLabel(doc && doc.querySelector('[aria-label="暂停"]') ? ['暂停'] : ['播放', '暂停']);
+        // Clicked, but nothing started: logged in with no song selected.
+        if (ok) {
+          setTimeout(function () {
+            var d = playerFrameDoc();
+            if (d && !d.querySelector('[aria-label="暂停"]')) {
+              toastFn('已打开播放器，请先选一首歌播放，之后顶栏按钮就能直接控制了');
+            }
+          }, 500);
+        }
+      } else if (action === 'prev') {
+        ok = clickPlayerLabel(['上一曲']);
+      } else if (action === 'next') {
+        ok = clickPlayerLabel(['下一曲']);
+      }
+      if (!ok) {
+        // A fresh browser has no login cookie for the player: the iframe shows
+        // a password box, not a transport bar. Say what to do instead of
+        // silently opening a panel that looks broken.
+        var doc = playerFrameDoc();
+        var needsLogin = doc && (doc.querySelector('input[type="password"]') ||
+          /登录|login|password/i.test((doc.body ? doc.body.innerText : '').slice(0, 300)));
+        if (needsLogin) {
+          toastFn('请先在音乐面板里登录 AnyListen，再选一首歌收藏或播放，之后顶栏按钮就能直接控制了');
+        }
+        try { frame.focus(); } catch (e) { /* ignore */ }
+      } else {
+        watchPlayerState();
+      }
+    }, firstLoad ? 1400 : 120);
+  }
+
   function focusPlayer() {
-    try { frame.focus(); } catch (e) { /* cross-origin focus is best-effort */ }
+    try { frame.focus(); } catch (e) { /* ignore */ }
   }
 
   function openPanel() {
@@ -291,10 +380,9 @@
     panel.removeAttribute('inert');
     panel.setAttribute('aria-hidden', 'false');
     toggle.setAttribute('aria-pressed', 'true');
-    toggle.textContent = '❚❚';
     open = true;
     if (state === 'idle' || state === 'error' || state === 'timeout') loadCurrent();
-    setTimeout(focusPlayer, 400);
+    setTimeout(watchPlayerState, 1200);
   }
 
   function closePanel() {
@@ -331,24 +419,15 @@
   }
 
   /* ---------- events ---------- */
-  // Prev / next focus the embedded player so its own keys can be used. They
-  // never fake a track change - that would be a button lying to the user.
-  function focusOrOpen() {
-    if (mode === 'embed') {
-      if (!open) openPanel();
-      else focusPlayer();
-    } else if (player.hidden) {
-      loadRandom().then(function () {
-        toggle.setAttribute('aria-pressed', String(!player.hidden));
-      });
-    }
-  }
-  if (prevBtn) prevBtn.addEventListener('click', focusOrOpen);
-  if (nextBtn) nextBtn.addEventListener('click', focusOrOpen);
+  if (prevBtn) prevBtn.addEventListener('click', function () { playerControl('prev'); });
+  if (nextBtn) nextBtn.addEventListener('click', function () { playerControl('next'); });
 
   toggle.addEventListener('click', function () {
     if (mode === 'embed') {
-      if (open) closePanel(); else openPanel();
+      // Panel closed: open it and start playback in one click.
+      // Panel open: the big button toggles play/pause, closing is the × button.
+      if (!open) playerControl('play');
+      else playerControl('play');
       return;
     }
     if (player.hidden) {
@@ -401,11 +480,11 @@
       // AnyListen keeps its own login. Say so on the control itself: without
       // a prior login the embedded page shows a password box instead of music.
       toggle.title = mode === 'embed'
-        ? '打开音乐（播放器需提前登录一次账号）'
+        ? '播放 / 暂停（播放器需提前登录一次账号）'
         : (configured ? '随机播放音乐' : '随机播放音乐（先在设置里配置服务）');
       toggle.setAttribute('aria-label', toggle.title);
-      if (prevBtn) prevBtn.title = '聚焦播放器切上一曲（需提前登录 AnyListen）';
-      if (nextBtn) nextBtn.title = '聚焦播放器切下一曲（需提前登录 AnyListen）';
+      if (prevBtn) prevBtn.title = '上一曲（需提前登录AnyListen）';
+      if (nextBtn) nextBtn.title = '下一曲（需提前登录AnyListen）';
       renderServiceSelect();
 
       if (mode === 'embed') {

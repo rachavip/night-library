@@ -10,6 +10,7 @@ const notes = require('./notes');
 const converter = require('./convert');
 const settingsStore = require('./settings');
 const music = require('./music');
+const musicProxy = require('./musicproxy');
 const versionStore = require('./version');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -265,6 +266,15 @@ app.get('/api/background', (req, res) => {
 function currentMusic() {
   return settings.music && settings.music.url ? settings.music : null;
 }
+
+// The reverse proxy needs the live URL, which changes when settings are saved.
+// A getter avoids copying a stale value at startup.
+musicProxy.setMusicUrl(function () {
+  const svc = currentMusic();
+  if (!svc) return '';
+  const active = (settings.music.services || []).find(s => s.id === settings.music.activeId);
+  return (active && active.url) || svc.url || '';
+});
 
 app.get('/api/music/status', async (req, res) => {
   const cfgMusic = currentMusic();
@@ -903,6 +913,10 @@ app.post('/api/rescan', async (req, res) => {
   res.json({ ok: true, count: result.count, scannedAt: result.scannedAt, folders: result.folders, stats: result.stats });
 });
 
+// Same-origin reverse proxy for embedded web players. Mounted before static
+// files so /music-proxy/... is never mistaken for a public asset.
+app.use(musicProxy.middleware);
+
 app.use(express.static(path.join(ROOT, 'public'), { index: false }));
 app.get('/', (req, res) => res.sendFile(path.join(ROOT, 'public', 'index.html')));
 app.get('/reader', (req, res) => res.sendFile(path.join(ROOT, 'public', 'reader.html')));
@@ -947,13 +961,16 @@ async function start() {
 
   // Serve the cached shelf immediately, then refresh in the background so a
   // large library never leaves the web UI hanging at startup.
-  app.listen(PORT, '0.0.0.0', () => {
+  const httpServer = app.listen(PORT, '0.0.0.0', () => {
     console.log(`${settings.systemName} running at http://localhost:${PORT}`);
     console.log(`books: ${cfg.booksDir}`);
     console.log(`data:  ${cfg.dataDir}`);
     console.log(`books indexed: ${currentIndex.books.length}`);
     console.log(`auto scan: startup=${scanOnStart ? 'on' : 'off'}, interval=${scanIntervalMinutes ? scanIntervalMinutes + 'min' : 'off'}`);
   });
+  // AnyListen drives its player over a WebSocket; forward the upgrade so the
+  // proxied iframe stays fully functional on our own origin.
+  musicProxy.upgrade(httpServer);
 
   if (scanOnStart || !currentIndex.scannedAt) {
     setImmediate(function () { runScan('startup'); });
