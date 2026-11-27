@@ -12,6 +12,8 @@
   var scrim = document.getElementById('drawer-scrim');
   var toastFn = window.nightToast || function () {};
   var folders = [];
+  // Paths the user confirmed for removal; cleaned up when settings are saved.
+  var forgottenFolders = [];
   var pendingMusicMode = 'embed';
   var pendingActiveId = '';
 
@@ -142,6 +144,17 @@
       del.textContent = '移除';
       del.setAttribute('aria-label', '移除文件夹 ' + path);
       del.addEventListener('click', function () {
+        // Removing a path is destructive: book ids are hashes of folder + path,
+        // so every derived record for that folder becomes unreachable. Say so
+        // before deleting rather than silently dropping reading history.
+        var label = window.confirm(
+          '移除文件夹「' + path + '」？\n\n' +
+          '这个文件夹下所有书的封面、转换缓存、阅读进度、笔记、书签和书单记录会一并删除，' +
+          '释放它们占用的空间。电子书文件本身不会被删除。\n\n' +
+          '确定要移除吗？'
+        );
+        if (!label) return;
+        forgottenFolders.push(path);
         folders.splice(i, 1);
         renderFolders();
       });
@@ -199,6 +212,11 @@
   function closeDrawer() {
     drawer.hidden = true;
     scrim.hidden = true;
+    // A cancelled drawer must not leave a pending deletion behind.
+    if (forgottenFolders.length) {
+      forgottenFolders = [];
+      applyAll(settings);
+    }
   }
 
   function collect() {
@@ -258,6 +276,23 @@
       applyBackground();
       closeDrawer();
       if (window.nightBooks) window.nightBooks.refresh();
+
+      // Forget the removed folders' derived data while the old index is still
+      // loaded - that index is what maps a folder to its book ids.
+      if (forgottenFolders.length) {
+        var cleaned = 0;
+        for (var f = 0; f < forgottenFolders.length; f++) {
+          var forgetRes = await fetch('/api/folders/forget', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: forgottenFolders[f] })
+          });
+          var forgetData = await forgetRes.json();
+          if (forgetRes.ok && forgetData.ok) cleaned += forgetData.books || 0;
+        }
+        forgottenFolders = [];
+        toastFn('已清理 ' + cleaned + ' 册的封面与阅读记录');
+      }
 
       // Folder changes only take effect after a rescan - do it automatically.
       if (beforeFolders !== JSON.stringify(folders.slice().sort())) {

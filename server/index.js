@@ -776,6 +776,95 @@ app.post('/api/folders/check', async (req, res) => {
   }
 });
 
+// Forget every book under a folder that is about to be removed from settings.
+// Book ids are hashes of folder + relative path, so the folder is the only
+// reliable way to find them. Nothing on the NAS itself is touched - only the
+// derived files under data/.
+app.post('/api/folders/forget', async (req, res) => {
+  const raw = String((req.body && req.body.path) || '').trim();
+  const folder = raw.replace(/\\/g, '/').replace(/\/+$/, '');
+  if (!folder || folder.includes('..')) return res.status(400).json({ error: '文件夹路径无效' });
+
+  const ids = (currentIndex.books || [])
+    .filter(b => b && b.id && (b.folder || cfg.booksDir).replace(/\\/g, '/').replace(/\/+$/, '') === folder)
+    .map(b => b.id);
+  const idSet = new Set(ids);
+
+  let covers = 0;
+  let converted = 0;
+  // Covers are stored as <id>.<ext>; list the directory once and match by
+  // prefix. Reading it per book made a 800-book folder do 800 readdir calls.
+  let coverFiles = [];
+  try { coverFiles = await fsp.readdir(cfg.coverDir); } catch (e) { /* no cover dir yet */ }
+  for (const id of ids) {
+    for (const name of coverFiles) {
+      if (name.startsWith(id + '.') || name === id) {
+        try {
+          await fsp.unlink(path.join(cfg.coverDir, name));
+          covers++;
+        } catch (e) { /* already gone */ }
+      }
+    }
+    try {
+      await fsp.unlink(path.join(cfg.convertDir, id + '.epub'));
+      converted++;
+    } catch (e) { /* not converted */ }
+  }
+
+  // Book ids live in four state files. Prune by id, then persist each one.
+  let progressRemoved = 0;
+  for (const id of ids) {
+    if (Object.prototype.hasOwnProperty.call(progress, id)) {
+      delete progress[id];
+      progressRemoved++;
+    }
+  }
+  if (progressRemoved) {
+    try { await library.saveProgress(cfg, progress); } catch (e) { /* best effort */ }
+  }
+
+  let notesRemoved = 0;
+  for (const id of ids) {
+    if (notesState.books && Object.prototype.hasOwnProperty.call(notesState.books, id)) {
+      delete notesState.books[id];
+      notesRemoved++;
+    }
+  }
+  if (notesRemoved) {
+    try { await notes.save(cfg, notesState); } catch (e) { /* best effort */ }
+  }
+
+  let shelvesRemoved = 0;
+  (shelvesState.collections || []).forEach(shelf => {
+    if (!Array.isArray(shelf.bookIds)) return;
+    const before = shelf.bookIds.length;
+    shelf.bookIds = shelf.bookIds.filter(id => !idSet.has(id));
+    shelvesRemoved += before - shelf.bookIds.length;
+  });
+  if (shelvesRemoved) {
+    try { await collections.save(cfg, shelvesState); } catch (e) { /* best effort */ }
+  }
+
+  // The ledger keeps per-day per-book seconds; drop those book keys too.
+  let ledgerRemoved = 0;
+  Object.keys(readingState.days || {}).forEach(key => {
+    const day = readingState.days[key];
+    if (!day || !day.books) return;
+    for (const id of ids) {
+      if (Object.prototype.hasOwnProperty.call(day.books, id)) {
+        delete day.books[id];
+        ledgerRemoved++;
+      }
+    }
+  });
+  if (ledgerRemoved) {
+    try { await reading.save(cfg, readingState); } catch (e) { /* best effort */ }
+  }
+
+  console.log(`[folders/forget] ${folder}: ${ids.length} 册 · 封面 ${covers} · 缓存 ${converted} · 进度 ${progressRemoved} · 笔记 ${notesRemoved} · 书单 ${shelvesRemoved} · 台账 ${ledgerRemoved}`);
+  res.json({ ok: true, books: ids.length, covers, converted, progress: progressRemoved, notes: notesRemoved, shelves: shelvesRemoved, ledger: ledgerRemoved });
+});
+
 // One scan path for manual, startup and scheduled runs. The lock keeps the
 // three from stacking up when a book-heavy NAS is still scanning.
 async function runScan(reason) {
