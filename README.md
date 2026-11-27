@@ -15,6 +15,7 @@
 <img src="https://img.shields.io/badge/docker%20compose-v2-2496ED?style=flat-square" alt="compose">
 <img src="https://img.shields.io/badge/node-20-339933?logo=node.js&logoColor=white&style=flat-square" alt="node">
 <img src="https://img.shields.io/badge/%E6%A0%BC%E5%BC%8F-PDF%20%C2%B7%20EPUB%20%C2%B7%20TXT%20%C2%B7%20MOBI%20%C2%B7%20AZW3-8A7256?style=flat-square" alt="formats">
+<a href="LICENSE"><img src="https://img.shields.io/badge/license-Proprietary-8A7256?style=flat-square" alt="license"></a>
 </p>
 
 </div>
@@ -433,4 +434,12 @@ SCAN_ON_START=1 npm start
 
 ## 许可
 
-仓库暂未附带 LICENSE 文件。如需二次分发或商用，请先与作者确认。
+本项目采用**专有许可**（Proprietary License），完整条款见 [LICENSE](LICENSE)。
+
+| 可以 | 需事先取得书面授权 |
+| --- | --- |
+| 在自己的 NAS / 电脑 / 服务器上部署自用 | 再分发、镜像、打包发布，包括改名换 logo 后当作自己的项目 |
+| 改名、换主题、改配置、扩展自己的书库 | 商用：收费服务、随硬件预装、以此为基础提供付费产品 |
+| 阅读与研究源代码 | 去除或篡改版权声明与作者署名；作为自己的原创作品提交 |
+
+第三方组件遵循各自许可证：`vendor/kindleunpack` 为 GPLv3，`public/vendor/` 下的 pdf.js 为 Apache-2.0、epub.js 为 BSD-3-Clause、JSZip 为 MIT 或 GPLv3（双许可）。分发包含这些组件的镜像时，请一并保留其许可证与出处。
