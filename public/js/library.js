@@ -3,14 +3,27 @@
 
   var state = {
     sort: 'title', order: 'asc', q: '', format: '',
-    view: 'grid', status: '', shelf: ''
+    view: 'grid', status: '', shelf: '',
+    // '' = the shelf people expect (hidden books left out), 'only' = the hidden
+    // pile itself, 'all' = everything including it.
+    hidden: '',
+    selecting: false,
+    selected: new Set()
   };
   var shelf = document.getElementById('shelf');
   var filters = document.getElementById('filters');
   var empty = document.getElementById('empty');
   var toastEl = document.getElementById('toast');
   var rescanBtn = document.getElementById('rescan');
-  var shelvesBar = document.getElementById('shelves-bar');
+  var selectModeBtn = document.getElementById('select-mode');
+  var railStates = document.getElementById('rail-states');
+  var railSeries = document.getElementById('rail-series');
+  var railTotal = document.getElementById('rail-total');
+  var batchBar = document.getElementById('batch-bar');
+  var batchCount = document.getElementById('batch-count');
+  var seriesPicker = document.getElementById('series-picker');
+  var seriesPickerList = document.getElementById('series-picker-list');
+  var seriesNewName = document.getElementById('series-new-name');
   var continueBox = document.getElementById('continue');
   var continueMain = document.getElementById('continue-main');
   var continueImg = document.getElementById('continue-img');
@@ -23,8 +36,13 @@
   var rail = document.getElementById('rail');
   var layoutEl = document.getElementById('layout');
   var formats = {};
+  var visibleFormats = {};
+  var hiddenFormats = {};
+  var hiddenCount = 0;
+  var visibleCount = 0;
   var booksById = {};
   var shelves = [];
+  var lastBooks = [];
   var summary = null;
   var toastTimer;
   var lastScannedAt = null;
@@ -80,7 +98,11 @@
     // playing while the reader is open.
     var href = '/reader?id=' + encodeURIComponent(book.id);
     var target = ' target="_blank" rel="noopener"';
-    var cover = '<span class="cover"><img src="' + coverUrl(book) + '" alt="" loading="lazy">' +
+    var picked = state.selected.has(book.id);
+    var cls = 'book' + (picked ? ' is-picked' : '');
+    var dataId = ' data-id="' + esc(book.id) + '"';
+    var cover = '<span class="cover"><span class="pick" aria-hidden="true">✓</span>' +
+      '<img src="' + coverUrl(book) + '" alt="" loading="lazy">' +
       '<span class="format-tag">' + esc(book.format.toUpperCase()) + '</span>' +
       '<span class="cover-more" role="button" tabindex="0" data-id="' + esc(book.id) +
       '" aria-label="查看《' + esc(book.title) + '》的详情与单独刮削">⋯</span></span>';
@@ -90,30 +112,55 @@
 
     if (state.view === 'list') {
       var mark = book.status === 'finished' ? '读完' : (percent ? percent + '%' : '未读');
-      return '<a class="book" href="' + href + '"' + target + ' aria-label="阅读《' + esc(book.title) + '》">' +
+      return '<a class="' + cls + '" href="' + href + '"' + target + dataId + ' aria-label="阅读《' + esc(book.title) + '》">' +
         cover + title + author +
         '<span class="list-format">' + esc(book.format.toUpperCase()) + '</span>' +
         '<span class="list-progress">' + mark + '</span>' +
         '</a>';
     }
-    return '<a class="book" href="' + href + '"' + target + ' aria-label="阅读《' + esc(book.title) + '》">' +
+    return '<a class="' + cls + '" href="' + href + '"' + target + dataId + ' aria-label="阅读《' + esc(book.title) + '》">' +
       cover + title + author + progress + '</a>';
   }
 
   async function renderBooks() {
     var params = new URLSearchParams({
       sort: state.sort, order: state.order, q: state.q, format: state.format,
-      status: state.status, collection: state.shelf
+      status: state.status, collection: state.shelf, hidden: state.hidden
     });
     try {
       var data = await api('/api/books?' + params.toString());
       booksById = {};
+      lastBooks = data.books;
       data.books.forEach(function (b) { booksById[b.id] = b; });
-      shelf.className = 'shelf ' + state.view;
+      // Ids that dropped out of this listing must not stay selected: hiding
+      // them and then pressing "hide" again would be a silent no-op.
+      var alive = new Set(data.books.map(function (b) { return b.id; }));
+      Array.from(state.selected).forEach(function (id) {
+        if (!alive.has(id)) state.selected.delete(id);
+      });
+      shelf.className = 'shelf ' + state.view + (state.selecting ? ' is-selecting' : '');
       shelf.innerHTML = data.books.map(card).join('');
-      empty.hidden = data.books.length > 0;
+      if (data.books.length) {
+        empty.hidden = true;
+      } else {
+        empty.hidden = false;
+        // The empty state has to explain the tab it belongs to: "put books in
+        // the folder" makes no sense when the hidden pile is simply empty.
+        var heading = empty.querySelector('h2');
+        var note = empty.querySelector('p');
+        if (state.hidden === 'only') {
+          heading.textContent = '还没有隐藏的书';
+          note.textContent = '点顶栏「整理」，勾选不常看的书再点「隐藏」，它们就会收在这里。';
+        } else {
+          heading.textContent = '这一格还空着';
+          note.textContent = '把书放进挂载的文件夹，再点一次「刮削」就会出现在书架。';
+        }
+      }
+      syncBatch();
     } catch (e) {
       shelf.innerHTML = '';
+      lastBooks = [];
+      empty.hidden = true;
       toast(e.message);
     }
   }
@@ -155,13 +202,11 @@
   }
 
   /* ---------- continue reading ---------- */
-  // The rail is a fixed 296px column. If nothing has been opened yet there is
-  // nothing to put in it but a one-line hint, so it collapses and the shelf
-  // takes the full width instead of leaving a dead strip on the left.
+  // The rail now carries the navigation, so it stays put even when nothing is
+  // in progress; only the reading block inside it collapses.
   function syncRail() {
-    var bare = continueBox.hidden;
-    if (rail) rail.hidden = bare;
-    if (layoutEl) layoutEl.classList.toggle('is-bare', bare);
+    if (rail) rail.hidden = false;
+    if (layoutEl) layoutEl.classList.remove('is-bare');
   }
 
   async function renderContinue() {
@@ -226,33 +271,41 @@
     if (e.target.closest && e.target.closest('[data-open-stats]')) openStats();
   });
 
-  /* ---------- shelves bar ---------- */
+  /* ---------- rail: reading states and series ---------- */
   function totals() {
     return (summary && summary.totals) || null;
   }
 
-  function chip(label, attrs, active, extra) {
-    return '<button type="button" class="chip' + (extra ? ' ' + extra : '') + '" aria-pressed="' + active + '" ' +
-      attrs + '>' + label + '</button>';
+  function railItem(label, count, active, attrs, extra) {
+    return '<button type="button" class="rail-item' + (extra ? ' ' + extra : '') +
+      '" aria-pressed="' + active + '" ' + attrs + '>' +
+      '<span>' + label + '</span>' +
+      (count === null || count === undefined ? '' : '<em>' + count + '</em>') +
+      '</button>';
   }
 
-  function renderShelves() {
+  function renderRail() {
     var t = totals();
-    var html = '';
-    html += chip('全部', 'data-status=""', !state.status && !state.shelf);
-    html += chip('在读' + (t ? '<em>' + t.reading + '</em>' : ''), 'data-status="reading"',
-      state.status === 'reading' && !state.shelf);
-    html += chip('读完' + (t ? '<em>' + t.finished + '</em>' : ''), 'data-status="finished"',
-      state.status === 'finished' && !state.shelf);
-    html += '<span class="chip-sep" aria-hidden="true"></span>';
-    shelves.forEach(function (s) {
-      html += '<button type="button" class="chip" aria-pressed="' + (state.shelf === s.id) + '" data-shelf="' + esc(s.id) + '">' +
-        esc(s.name) + '<em>' + s.count + '</em>' +
-        '<span class="chip-x" data-del="' + esc(s.id) + '" role="button" tabindex="0" aria-label="删除书单 ' + esc(s.name) + '">×</span>' +
+    railTotal.textContent = visibleCount + ' 册可见' + (hiddenCount ? ' · ' + hiddenCount + ' 隐藏' : '');
+    railStates.innerHTML =
+      railItem('全部（不含隐藏）', visibleCount,
+        !state.status && !state.shelf && state.hidden !== 'only', 'data-nav="all"') +
+      railItem('在读', t ? t.reading : '—',
+        state.status === 'reading' && state.hidden !== 'only', 'data-nav="reading"') +
+      railItem('读完', t ? t.finished : '—',
+        state.status === 'finished' && state.hidden !== 'only', 'data-nav="finished"') +
+      railItem('隐藏', hiddenCount, state.hidden === 'only', 'data-nav="hidden"', 'is-hidden-item');
+
+    var html = shelves.map(function (s) {
+      return '<button type="button" class="rail-item" aria-pressed="' + (state.shelf === s.id) + '"' +
+        ' data-series="' + esc(s.id) + '">' +
+        '<span>' + esc(s.name) + '</span><em>' + s.count + '</em>' +
+        '<span class="rail-x" data-del-series="' + esc(s.id) + '" role="button" tabindex="0"' +
+        ' aria-label="删除丛书 ' + esc(s.name) + '">×</span>' +
         '</button>';
-    });
-    html += '<button type="button" class="chip chip-new" id="shelf-new-chip">＋ 书单</button>';
-    shelvesBar.innerHTML = html;
+    }).join('');
+    railSeries.innerHTML = html ||
+      '<p class="rail-empty">还没有丛书。点上方「整理」选中几本，就能归成一组。</p>';
   }
 
   async function loadShelves() {
@@ -262,18 +315,24 @@
     } catch (e) {
       shelves = [];
     }
-    renderShelves();
+    renderRail();
   }
 
-  async function createShelf() {
-    var name = window.prompt('新书单叫什么？（比如：今年要读、历史专题）', '');
+  function clearFilters() {
+    state.status = '';
+    state.shelf = '';
+    state.hidden = '';
+  }
+
+  async function createSeries() {
+    var name = window.prompt('新丛书叫什么？（比如：西游记、二十四史、菜谱）', '');
     if (name === null) return null;
     name = name.trim();
     if (!name) return null;
     try {
       var r = await send('/api/collections', 'POST', { name: name });
       await loadShelves();
-      toast('已创建书单「' + r.collection.name + '」');
+      toast('已创建丛书「' + r.collection.name + '」');
       return r.collection;
     } catch (e) {
       toast(e.message);
@@ -281,56 +340,67 @@
     }
   }
 
-  async function deleteShelf(id) {
+  async function deleteSeries(id) {
     var item = shelves.find(function (s) { return s.id === id; });
     if (!item) return;
-    if (!window.confirm('删除书单「' + item.name + '」？书本身不会被删，只是不再归在这个书单里。')) return;
+    if (!window.confirm('删除丛书「' + item.name + '」？书本身不会被删，只是不再归在这一组里。')) return;
     try {
       await api('/api/collections/' + encodeURIComponent(id), { method: 'DELETE' });
       if (state.shelf === id) state.shelf = '';
       await loadShelves();
       await renderBooks();
-      toast('已删除书单');
+      toast('已删除丛书');
     } catch (e) {
       toast(e.message);
     }
   }
 
-  shelvesBar.addEventListener('click', function (e) {
-    var del = e.target.closest ? e.target.closest('[data-del]') : null;
+  railStates.addEventListener('click', function (e) {
+    var btn = e.target.closest ? e.target.closest('[data-nav]') : null;
+    if (!btn) return;
+    var nav = btn.getAttribute('data-nav');
+    state.shelf = '';
+    if (nav === 'all') {
+      state.status = '';
+      state.hidden = '';
+    } else if (nav === 'reading' || nav === 'finished') {
+      state.status = nav;
+      state.hidden = '';
+    } else if (nav === 'hidden') {
+      state.status = '';
+      state.hidden = state.hidden === 'only' ? '' : 'only';
+    }
+    renderRail();
+    renderFilters();
+    renderBooks();
+  });
+
+  railSeries.addEventListener('click', function (e) {
+    var del = e.target.closest ? e.target.closest('[data-del-series]') : null;
     if (del) {
       e.preventDefault();
       e.stopPropagation();
-      deleteShelf(del.getAttribute('data-del'));
+      deleteSeries(del.getAttribute('data-del-series'));
       return;
     }
-    if (e.target.closest && e.target.closest('#shelf-new-chip')) {
-      createShelf();
-      return;
-    }
-    var shelfBtn = e.target.closest ? e.target.closest('[data-shelf]') : null;
-    if (shelfBtn) {
-      state.shelf = state.shelf === shelfBtn.getAttribute('data-shelf') ? '' : shelfBtn.getAttribute('data-shelf');
-      state.status = '';
-      renderShelves();
-      renderBooks();
-      return;
-    }
-    var statusBtn = e.target.closest ? e.target.closest('[data-status]') : null;
-    if (statusBtn) {
-      state.status = statusBtn.getAttribute('data-status') || '';
-      state.shelf = '';
-      renderShelves();
-      renderBooks();
-    }
+    var btn = e.target.closest ? e.target.closest('[data-series]') : null;
+    if (!btn) return;
+    var id = btn.getAttribute('data-series');
+    state.shelf = state.shelf === id ? '' : id;
+    state.status = '';
+    state.hidden = '';
+    renderRail();
+    renderFilters();
+    renderBooks();
   });
-  shelvesBar.addEventListener('keydown', function (e) {
+  railSeries.addEventListener('keydown', function (e) {
     if (e.key !== 'Enter' && e.key !== ' ') return;
-    var del = e.target.closest ? e.target.closest('[data-del]') : null;
+    var del = e.target.closest ? e.target.closest('[data-del-series]') : null;
     if (!del) return;
     e.preventDefault();
-    deleteShelf(del.getAttribute('data-del'));
+    deleteSeries(del.getAttribute('data-del-series'));
   });
+  document.getElementById('rail-series-new').addEventListener('click', function () { createSeries(); });
 
   /* ---------- reading summary line + statistics ---------- */
   async function renderReading() {
@@ -351,7 +421,7 @@
     readingLine.innerHTML = '<span>' + esc(bits.length ? bits.join(' · ') : '还没有阅读记录，翻开一本书就开始计时') +
       '</span><em>阅读统计 ›</em>';
     syncRail();
-    renderShelves();
+    renderRail();
     // The side column falls back to these numbers when there is only one book
     // in progress, and that fallback needs the summary that just arrived.
     renderContinue();
@@ -651,8 +721,17 @@
   }
 
   // The corner button lives inside the card link, so the click has to be
-  // intercepted before it turns into a page navigation.
+  // intercepted before it turns into a page navigation. In tidy-up mode the
+  // whole card becomes a checkbox and nothing navigates.
   shelf.addEventListener('click', function (e) {
+    if (state.selecting) {
+      var link = e.target.closest ? e.target.closest('.book') : null;
+      if (!link) return;
+      e.preventDefault();
+      e.stopPropagation();
+      togglePick(link.getAttribute('data-id'));
+      return;
+    }
     var more = e.target && e.target.closest ? e.target.closest('.cover-more') : null;
     if (!more) return;
     e.preventDefault();
@@ -661,6 +740,14 @@
   });
   shelf.addEventListener('keydown', function (e) {
     if (e.key !== 'Enter' && e.key !== ' ') return;
+    if (state.selecting) {
+      var card = e.target.closest ? e.target.closest('.book') : null;
+      if (!card) return;
+      e.preventDefault();
+      e.stopPropagation();
+      togglePick(card.getAttribute('data-id'));
+      return;
+    }
     var more = e.target && e.target.closest ? e.target.closest('.cover-more') : null;
     if (!more) return;
     e.preventDefault();
@@ -679,16 +766,175 @@
     else if (!statsSheet.hidden) closeStats();
   });
 
-  function renderFilters() {
-    var items = [['', '全部', Object.values(formats).reduce(function (a, b) { return a + b; }, 0)]];
-    Object.keys(formats).sort().forEach(function (f) { items.push([f, f.toUpperCase(), formats[f]]); });
-    filters.innerHTML = items.map(function (item) {
-      return '<button class="filter" type="button" data-format="' + esc(item[0]) + '" aria-pressed="' +
-        (state.format === item[0]) + '">' + esc(item[1]) + '<em>' + item[2] + '</em></button>';
+  /* ---------- tidy-up: hide a batch, file a batch into a series ---------- */
+  function syncBatch() {
+    selectModeBtn.textContent = state.selecting ? '完成' : '整理';
+    selectModeBtn.setAttribute('aria-pressed', String(state.selecting));
+    batchBar.hidden = !state.selecting;
+    if (!state.selecting) {
+      seriesPicker.hidden = true;
+      return;
+    }
+    batchCount.textContent = '已选 ' + state.selected.size + ' 本';
+    var none = state.selected.size === 0;
+    ['batch-hide', 'batch-unhide', 'batch-series'].forEach(function (id) {
+      document.getElementById(id).disabled = none;
+    });
+    document.getElementById('batch-all').textContent = '全选 ' + lastBooks.length + ' 本';
+    document.getElementById('batch-all').disabled = lastBooks.length === 0;
+  }
+
+  function repaintShelf() {
+    shelf.innerHTML = lastBooks.map(card).join('');
+  }
+
+  function togglePick(id) {
+    if (state.selected.has(id)) state.selected.delete(id);
+    else state.selected.add(id);
+    var node = shelf.querySelector('.book[data-id="' + id + '"]');
+    if (node) node.classList.toggle('is-picked', state.selected.has(id));
+    syncBatch();
+  }
+
+  function setSelecting(on) {
+    state.selecting = on;
+    if (!on) {
+      state.selected.clear();
+      seriesPicker.hidden = true;
+    }
+    shelf.classList.toggle('is-selecting', on);
+    repaintShelf();
+    syncBatch();
+  }
+
+  async function hideSelected(hidden) {
+    var ids = Array.from(state.selected);
+    if (!ids.length) return;
+    try {
+      var r = await send('/api/books/hide', 'POST', { ids: ids, hidden: hidden });
+      if (hidden) {
+        var skipped = ids.length - (r.changed || 0);
+        toast('已隐藏 ' + ids.length + ' 本' + (skipped > 0 ? '（其中 ' + skipped + ' 本本来就在隐藏里）' : ''));
+      } else {
+        toast('已取消隐藏 ' + ids.length + ' 本');
+      }
+      state.selected.clear();
+      await renderStats();
+      await renderBooks();
+      await renderContinue();
+    } catch (e) {
+      toast(e.message);
+    }
+  }
+
+  function renderSeriesPicker() {
+    if (!shelves.length) {
+      seriesPickerList.innerHTML = '<p class="shelf-picker-empty">还没有丛书，在下面新建一个。</p>';
+      return;
+    }
+    seriesPickerList.innerHTML = shelves.map(function (s) {
+      return '<button type="button" class="shelf-picker-row" data-put="' + esc(s.id) + '">' +
+        '<span>' + esc(s.name) + '</span><em>' + s.count + ' 本</em></button>';
     }).join('');
+  }
+
+  async function addSelectedToSeries(id) {
+    var ids = Array.from(state.selected);
+    if (!ids.length) return;
+    var item = shelves.find(function (s) { return s.id === id; });
+    try {
+      await send('/api/collections/' + encodeURIComponent(id), 'PUT', { add: ids });
+      await loadShelves();
+      seriesPicker.hidden = true;
+      toast('已把 ' + ids.length + ' 本归入「' + ((item && item.name) || '丛书') + '」');
+    } catch (e) {
+      toast(e.message);
+    }
+  }
+
+  selectModeBtn.addEventListener('click', function () {
+    setSelecting(!state.selecting);
+    if (state.selecting) toast('勾选书，再点「隐藏」或「加入丛书」');
+  });
+  document.getElementById('batch-exit').addEventListener('click', function () { setSelecting(false); });
+  document.getElementById('batch-all').addEventListener('click', function () {
+    lastBooks.forEach(function (b) { state.selected.add(b.id); });
+    repaintShelf();
+    syncBatch();
+  });
+  document.getElementById('batch-hide').addEventListener('click', function () { hideSelected(true); });
+  document.getElementById('batch-unhide').addEventListener('click', function () { hideSelected(false); });
+  document.getElementById('batch-series').addEventListener('click', function () {
+    seriesPicker.hidden = !seriesPicker.hidden;
+    if (!seriesPicker.hidden) {
+      renderSeriesPicker();
+      // Searching "西游记" then grouping is the common path, so the search box
+      // is the best guess for a name — still editable.
+      seriesNewName.value = document.getElementById('search').value.trim();
+    }
+  });
+  seriesPickerList.addEventListener('click', function (e) {
+    var btn = e.target.closest ? e.target.closest('[data-put]') : null;
+    if (!btn) return;
+    addSelectedToSeries(btn.getAttribute('data-put'));
+  });
+  document.getElementById('series-new-btn').addEventListener('click', async function () {
+    var name = seriesNewName.value.trim();
+    if (!name) { seriesNewName.focus(); return; }
+    if (!state.selected.size) { toast('先勾选几本书'); return; }
+    try {
+      var created = await send('/api/collections', 'POST', { name: name });
+      await send('/api/collections/' + encodeURIComponent(created.collection.id), 'PUT',
+        { add: Array.from(state.selected) });
+      var total = state.selected.size;
+      seriesNewName.value = '';
+      await loadShelves();
+      seriesPicker.hidden = true;
+      toast('已建丛书「' + created.collection.name + '」并加入 ' + total + ' 本');
+    } catch (e) {
+      toast(e.message);
+    }
+  });
+  seriesNewName.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      document.getElementById('series-new-btn').click();
+    }
+    e.stopPropagation();
+  });
+
+  function renderFilters() {
+    var onHidden = state.hidden === 'only';
+    // The counts follow the tab: format chips describe the pile you are looking
+    // at, not the whole library.
+    var source = onHidden ? hiddenFormats : visibleFormats;
+    var visibleTotal = Object.keys(visibleFormats).reduce(function (a, k) {
+      return a + visibleFormats[k];
+    }, 0);
+    var html = '<button class="filter" type="button" data-format="" aria-pressed="' +
+      (!onHidden && !state.format) + '" title="不含已隐藏的书">全部（不含隐藏）<em>' +
+      visibleTotal + '</em></button>';
+    Object.keys(source).sort().forEach(function (f) {
+      html += '<button class="filter" type="button" data-format="' + esc(f) + '" aria-pressed="' +
+        (state.format === f) + '">' + esc(f.toUpperCase()) + '<em>' + source[f] + '</em></button>';
+    });
+    html += '<span class="filter-sep" aria-hidden="true"></span>' +
+      '<button class="filter filter-hidden" type="button" data-scope="only" aria-pressed="' +
+      onHidden + '" title="只看已隐藏的书">隐藏<em>' + hiddenCount + '</em></button>';
+    filters.innerHTML = html;
     Array.prototype.forEach.call(filters.querySelectorAll('.filter'), function (btn) {
       btn.addEventListener('click', function () {
-        state.format = btn.dataset.format;
+        if (btn.getAttribute('data-scope') === 'only') {
+          state.hidden = state.hidden === 'only' ? '' : 'only';
+          state.format = '';
+          state.status = '';
+          state.shelf = '';
+        } else {
+          // Inside the hidden tab a format chip narrows the hidden pile, which
+          // is what the label promises.
+          state.format = btn.dataset.format;
+        }
+        renderRail();
         renderFilters();
         renderBooks();
       });
@@ -708,14 +954,19 @@
     try {
       var stats = await api('/api/stats');
       formats = stats.formats || {};
+      visibleFormats = stats.visibleFormats || formats;
+      hiddenFormats = stats.hiddenFormats || {};
+      hiddenCount = stats.hiddenCount || 0;
+      visibleCount = typeof stats.visibleCount === 'number' ? stats.visibleCount : stats.count;
       lastScannedAt = stats.scannedAt;
       lastCount = stats.count;
       lastScanning = Boolean(stats.scanning);
-      document.getElementById('stat-count').textContent = stats.count;
+      document.getElementById('stat-count').textContent = visibleCount;
       var when = stats.scannedAt ? new Date(stats.scannedAt).toLocaleString('zh-CN', {
         month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit'
       }) : '从未';
       var bits = ['上次整理 ' + when];
+      if (hiddenCount) bits.push('已隐藏 ' + hiddenCount + ' 本');
       if (stats.scanning) bits.push('正在整理…');
       var last = stats.lastScan;
       if (last && last.reused > 0) {
@@ -731,6 +982,7 @@
       }
       if (!stats.converter) bits.push('镜像缺少 Kindle 解包器，MOBI/AZW3 无法在线阅读');
       document.getElementById('stat-meta').textContent = bits.join(' · ');
+      renderRail();
       renderFilters();
     } catch (e) {
       document.getElementById('stat-meta').textContent = '书房暂时无法访问';

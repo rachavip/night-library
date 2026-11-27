@@ -6,6 +6,7 @@ const iconv = require('iconv-lite');
 const library = require('./library');
 const reading = require('./reading');
 const collections = require('./collections');
+const hiddenStore = require('./hidden');
 const notes = require('./notes');
 const converter = require('./convert');
 const settingsStore = require('./settings');
@@ -104,6 +105,7 @@ function decorate(book, index) {
     ...book,
     status: bookStatus(book),
     progress: progress[book.id] || null,
+    hidden: hiddenStore.has(hiddenState, book.id),
     noteCount: counts,
     collections: (index && index.get(book.id)) || []
   };
@@ -115,7 +117,9 @@ function syncShelves() {
   const valid = new Set(currentIndex.books.map(b => b.id));
   const removed = collections.prune(shelvesState, valid);
   if (removed) console.log(`[shelves] dropped ${removed} stale book id(s)`);
-  return removed;
+  const hiddenRemoved = hiddenStore.prune(hiddenState, valid);
+  if (hiddenRemoved) console.log(`[hidden] dropped ${hiddenRemoved} stale book id(s)`);
+  return { shelves: removed, hidden: hiddenRemoved };
 }
 
 // Resolve a book's real file. Each book remembers the folder it came from,
@@ -166,6 +170,8 @@ let progress = {};
 // Reading time per day, hand-built shelves, and highlights/bookmarks.
 let readingState = reading.emptyState();
 let shelvesState = collections.emptyState();
+// Books put away by hand: kept in the index, out of the default shelf.
+let hiddenState = hiddenStore.emptyState();
 let notesState = notes.emptyState();
 let scanning = false;
 // Books being re-scraped on their own. A single-book repair writes the index,
@@ -383,12 +389,27 @@ app.get('/api/music/cover/:id', (req, res) => {
 
 app.get('/api/stats', (req, res) => {
   const formats = {};
-  currentIndex.books.forEach(b => { formats[b.format] = (formats[b.format] || 0) + 1; });
+  const visibleFormats = {};
+  const hiddenFormats = {};
+  let hiddenCount = 0;
+  currentIndex.books.forEach(b => {
+    formats[b.format] = (formats[b.format] || 0) + 1;
+    if (hiddenStore.has(hiddenState, b.id)) {
+      hiddenCount++;
+      hiddenFormats[b.format] = (hiddenFormats[b.format] || 0) + 1;
+    } else {
+      visibleFormats[b.format] = (visibleFormats[b.format] || 0) + 1;
+    }
+  });
   res.json({
     count: currentIndex.books.length,
+    hiddenCount,
+    visibleCount: currentIndex.books.length - hiddenCount,
     scannedAt: currentIndex.scannedAt,
     lastScan: currentIndex.stats || null,
     formats,
+    visibleFormats,
+    hiddenFormats,
     converter: converter.isAvailable(),
     booksDir: cfg.booksDir,
     folders: currentIndex.folders || [],
@@ -402,8 +423,13 @@ app.get('/api/stats', (req, res) => {
 });
 
 app.get('/api/books', (req, res) => {
-  const { sort = 'title', order = 'asc', q = '', format = '', status = '', collection = '', limit = '' } = req.query;
+  const { sort = 'title', order = 'asc', q = '', format = '', status = '', collection = '',
+    hidden = '', limit = '' } = req.query;
   let books = currentIndex.books;
+  // Default is the shelf people expect: what they have not put away.
+  // `hidden=only` is the "hidden" tab, `hidden=all` is the honest total.
+  if (hidden === 'only') books = books.filter(b => hiddenStore.has(hiddenState, b.id));
+  else if (hidden !== 'all') books = books.filter(b => !hiddenStore.has(hiddenState, b.id));
   if (format) books = books.filter(b => b.format === format);
   if (collection) {
     const shelf = shelvesState.collections.find(c => c.id === collection);
@@ -433,6 +459,18 @@ app.get('/api/books', (req, res) => {
   if (Number.isFinite(cap) && cap > 0) books = books.slice(0, cap);
   const index = shelfIndex();
   res.json({ count: books.length, books: books.map(b => decorate(b, index)) });
+});
+
+// Hide or unhide a batch. Ids that are already in the wanted state are
+// ignored, so "hide all selected" twice is not a write each time.
+app.post('/api/books/hide', async (req, res) => {
+  const body = req.body || {};
+  const ids = Array.isArray(body.ids) ? body.ids : [];
+  if (!ids.length) return res.status(400).json({ error: '没有选中任何书' });
+  const want = body.hidden !== false;
+  const changed = hiddenStore.setMany(hiddenState, ids, want);
+  if (changed) await hiddenStore.save(cfg, hiddenState);
+  res.json({ ok: true, changed, hiddenCount: hiddenStore.count(hiddenState) });
 });
 
 app.get('/api/book/:id', (req, res) => {
@@ -821,7 +859,7 @@ app.post('/api/folders/forget', async (req, res) => {
     } catch (e) { /* not converted */ }
   }
 
-  // Book ids live in four state files. Prune by id, then persist each one.
+  // Book ids live in five state files. Prune by id, then persist each one.
   let progressRemoved = 0;
   for (const id of ids) {
     if (Object.prototype.hasOwnProperty.call(progress, id)) {
@@ -853,6 +891,13 @@ app.post('/api/folders/forget', async (req, res) => {
   });
   if (shelvesRemoved) {
     try { await collections.save(cfg, shelvesState); } catch (e) { /* best effort */ }
+  }
+
+  // A forgotten folder also takes its books out of the hidden list, otherwise
+  // the count would keep pointing at files that are no longer indexed.
+  const hiddenRemoved = hiddenStore.setMany(hiddenState, ids, false);
+  if (hiddenRemoved) {
+    try { await hiddenStore.save(cfg, hiddenState); } catch (e) { /* best effort */ }
   }
 
   // The ledger keeps per-day per-book seconds; drop those book keys too.
@@ -887,7 +932,9 @@ async function runScan(reason) {
     currentIndex = await library.scan(cfg, folders);
     lastScanError = '';
     // A renamed or deleted file leaves stale ids behind in the shelves.
-    if (syncShelves()) await collections.save(cfg, shelvesState);
+    const stale = syncShelves();
+    if (stale.shelves) await collections.save(cfg, shelvesState);
+    if (stale.hidden) await hiddenStore.save(cfg, hiddenState);
     const st = currentIndex.stats || {};
     console.log(`[scan/${reason}] ${currentIndex.count} 册 · 复用 ${st.reused || 0} · 新刮 ${st.scraped || 0} · ${Date.now() - started}ms`);
     return {
@@ -955,6 +1002,7 @@ async function start() {
   progress = await library.loadProgress(cfg);
   readingState = await reading.load(cfg);
   shelvesState = await collections.load(cfg);
+  hiddenState = await hiddenStore.load(cfg);
   notesState = await notes.load(cfg);
 
   applyScanSettings();

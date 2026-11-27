@@ -44,6 +44,7 @@
         <button type="button" data-view="list" aria-pressed="false">列表</button>
       </div>
       <button class="ghost-btn" id="rescan">刮削</button>
+      <button class="ghost-btn" id="select-mode" aria-pressed="false" title="批量隐藏或归入丛书">整理</button>
       <div class="mini-player" role="group" aria-label="音乐控制">
         <button type="button" class="mini-player-btn" id="music-prev" title="聚焦播放器（上一曲请用播放器里的按钮）" aria-label="上一曲（聚焦播放器）">⏮</button>
         <button type="button" class="mini-player-btn is-primary" id="music-toggle" title="打开音乐" aria-label="打开音乐" aria-pressed="false">▶</button>
@@ -60,8 +61,25 @@
     </section>
 
     <div class="layout" id="layout">
-      <!-- left rail: what you are reading, kept out of the shelf's way -->
-      <aside class="rail" id="rail" aria-label="阅读记录">
+      <!-- left rail: navigation first (always there), reading history under it -->
+      <aside class="rail" id="rail" aria-label="书房导航">
+        <nav class="rail-nav" aria-label="藏书分类">
+          <section class="rail-group">
+            <div class="rail-group-head">
+              <h2>藏书</h2>
+              <span class="rail-group-note" id="rail-total"></span>
+            </div>
+            <div class="rail-items" id="rail-states"></div>
+          </section>
+          <section class="rail-group">
+            <div class="rail-group-head">
+              <h2>丛书</h2>
+              <button type="button" class="rail-add" id="rail-series-new" aria-label="新建丛书">＋ 新建</button>
+            </div>
+            <div class="rail-items" id="rail-series"></div>
+          </section>
+        </nav>
+
         <!-- continue reading: the one book you are in the middle of -->
         <section class="continue" id="continue" hidden aria-label="继续阅读">
           <a class="continue-main" id="continue-main" href="/">
@@ -86,7 +104,21 @@
       </aside>
 
       <div class="shelf-col">
-        <nav class="shelves-bar" id="shelves-bar" aria-label="书单与阅读状态"></nav>
+        <div class="batch-bar" id="batch-bar" hidden>
+          <span class="batch-count" id="batch-count">已选 0 本</span>
+          <button type="button" class="ghost-btn" id="batch-all">全选这一页</button>
+          <button type="button" class="ghost-btn" id="batch-hide">隐藏</button>
+          <button type="button" class="ghost-btn" id="batch-unhide">取消隐藏</button>
+          <button type="button" class="ghost-btn" id="batch-series">加入丛书</button>
+          <button type="button" class="ghost-btn" id="batch-exit">退出整理</button>
+        </div>
+        <div class="series-picker" id="series-picker" hidden>
+          <div class="shelf-picker-list" id="series-picker-list"></div>
+          <div class="shelf-picker-new">
+            <input id="series-new-name" type="text" maxlength="40" placeholder="新丛书名，比如：西游记" aria-label="新丛书名称">
+            <button type="button" class="ghost-btn" id="series-new-btn">新建并加入</button>
+          </div>
+        </div>
 
         <nav class="filters" id="filters" aria-label="格式筛选"></nav>
         <div class="shelf grid" id="shelf" aria-live="polite"></div>
