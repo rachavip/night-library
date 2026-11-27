@@ -168,7 +168,9 @@
           note.textContent = '点顶栏「整理」，勾选不常看的书再点「隐藏」，它们就会收在这里。';
         } else {
           heading.textContent = '这一格还空着';
-          note.textContent = '把书放进挂载的文件夹，再点一次「刮削」就会出现在书架。';
+          note.textContent = (state.shelf || state.status || state.q)
+            ? '当前这一堆里没有匹配的书。点最上方的「全部（不含隐藏）」回到整柜。'
+            : '把书放进挂载的文件夹，再点一次「刮削」就会出现在书架。';
         }
       }
       syncBatch();
@@ -351,12 +353,6 @@
     renderRail();
   }
 
-  function clearFilters() {
-    state.status = '';
-    state.shelf = '';
-    state.hidden = '';
-  }
-
   async function createSeries() {
     var name = window.prompt('新丛书叫什么？（比如：西游记、二十四史、菜谱）', '');
     if (name === null) return null;
@@ -458,6 +454,9 @@
     if (!btn) return;
     var nav = btn.getAttribute('data-nav');
     state.shelf = '';
+    // 换一堆书看：格式属于上一堆，搜索词也是，一起清掉，数字才对得上。
+    state.format = '';
+    clearQuery();
     if (nav === 'reading' || nav === 'finished') {
       // 再点一次当前项就取消筛选，回到「全部」——左侧没有单独的「全部」了。
       state.status = state.status === nav ? '' : nav;
@@ -492,6 +491,9 @@
     state.shelf = state.shelf === id ? '' : id;
     state.status = '';
     state.hidden = '';
+    // 组后面的册数是这一组的全部书，所以点进来时不能还留着格式或搜索词。
+    state.format = '';
+    clearQuery();
     renderRail();
     renderFilters();
     renderBooks();
@@ -1225,16 +1227,30 @@
     e.stopPropagation();
   });
 
+  // 每一栏都回答同一个问题：点下去会出现多少本。所以左栏、丛书、格式条换的是
+  // 同一层「哪一堆书」，搜索框里的词属于上一堆，换堆时一并清掉；否则按钮上的
+  // 数字和点完看到的册数对不上。
+  function clearQuery() {
+    if (!state.q) return;
+    state.q = '';
+    // 搜索框是边打边筛（180ms 防抖），刚打完就点栏位时那个定时器还没跑，
+    // 不清掉它会在 180ms 后把搜索词又安回来。
+    clearTimeout(searchTimer);
+    var box = document.getElementById('search');
+    if (box) box.value = '';
+  }
+
   function renderFilters() {
     var onHidden = state.hidden === 'only';
-    // The counts follow the tab: format chips describe the pile you are looking
-    // at, not the whole library.
+    // 格式条说的是「整柜里各种格式各有多少本」，不跟着丛书变：点丛书就是那一组
+    // 的全部，不会按格式再拆一次数。
     var source = onHidden ? hiddenFormats : visibleFormats;
     var visibleTotal = Object.keys(visibleFormats).reduce(function (a, k) {
       return a + visibleFormats[k];
     }, 0);
     var html = '<button class="filter" type="button" data-format="" aria-pressed="' +
-      (!onHidden && !state.format) + '" title="不含已隐藏的书">全部（不含隐藏）<em>' +
+      (!onHidden && !state.format && !state.shelf && !state.status && !state.q) +
+      '" title="回到整柜，清掉丛书、状态、格式与搜索">全部（不含隐藏）<em>' +
       visibleTotal + '</em></button>';
     Object.keys(source).sort().forEach(function (f) {
       html += '<button class="filter" type="button" data-format="' + esc(f) + '" aria-pressed="' +
@@ -1251,10 +1267,22 @@
           state.format = '';
           state.status = '';
           state.shelf = '';
+          clearQuery();
+        } else if (!btn.dataset.format) {
+          // 「全部（不含隐藏）」是一排里的总闸：丛书、状态、格式、搜索一起归零，
+          // 只留「不含隐藏」这条底线，点完看到的就是整柜。
+          state.format = '';
+          state.status = '';
+          state.shelf = '';
+          state.hidden = '';
+          clearQuery();
         } else {
-          // Inside the hidden tab a format chip narrows the hidden pile, which
-          // is what the label promises.
-          state.format = btn.dataset.format;
+          // 一次只选一堆：点 EPUB 就只看整柜的 EPUB，之前选中的丛书与状态让出来，
+          // 再点一次同一个就回到「全部」。这样按钮上的册数永远等于点完看到的。
+          state.format = state.format === btn.dataset.format ? '' : btn.dataset.format;
+          state.shelf = '';
+          state.status = '';
+          clearQuery();
         }
         renderRail();
         renderFilters();

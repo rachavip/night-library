@@ -23,7 +23,9 @@ const DEFAULTS = {
   theme: 'night',
   typeface: 'kai',
   folders: [],
-  background: { enabled: false, data: '', blur: 0, dim: 0.55 },
+  // focus 是背景图的取景位置，百分比（0–100，50 即居中）。封面铺满整页时，
+  // 比例不一致的图一定会被裁，这个值决定留下哪一块。
+  background: { enabled: false, data: '', blur: 0, dim: 0.55, focus: { x: 50, y: 50 } },
   // Scan schedule is editable in the settings drawer. compose env vars can
   // still force a value for declarative NAS deploys; otherwise the saved
   // value wins. intervalMinutes 0 means scheduled scans are off.
@@ -157,6 +159,17 @@ function cleanActiveId(value, services) {
   return first ? first.id : '';
 }
 
+// 取景位置：两个 0–100 的百分比，保留一位小数。缺一项就沿用旧值。
+function cleanFocus(value, fallback) {
+  const base = fallback || { x: 50, y: 50 };
+  if (!value || typeof value !== 'object') return { x: base.x, y: base.y };
+  const round = n => Math.round(n * 10) / 10;
+  return {
+    x: round(clamp(value.x, 0, 100, base.x)),
+    y: round(clamp(value.y, 0, 100, base.y))
+  };
+}
+
 async function load(cfg) {
   try {
     const raw = JSON.parse(await fsp.readFile(file(cfg), 'utf8'));
@@ -172,6 +185,7 @@ async function load(cfg) {
     out.background.data = cleanString(bg.data, 500, '');
     out.background.blur = clamp(bg.blur, 0, 20, 0);
     out.background.dim = clamp(bg.dim, 0, 0.9, 0.55);
+    out.background.focus = cleanFocus(bg.focus);
     const scan = raw.scan || {};
     if (Object.prototype.hasOwnProperty.call(scan, 'onStart')) out.scan.onStart = Boolean(scan.onStart);
     out.scan.intervalMinutes = clampInterval(scan.intervalMinutes, DEFAULTS.scan.intervalMinutes);
@@ -222,6 +236,9 @@ function merge(current, input) {
   if (Object.prototype.hasOwnProperty.call(bg, 'data')) out.background.data = cleanString(bg.data, 500, '');
   if (Object.prototype.hasOwnProperty.call(bg, 'blur')) out.background.blur = clamp(bg.blur, 0, 20, 0);
   if (Object.prototype.hasOwnProperty.call(bg, 'dim')) out.background.dim = clamp(bg.dim, 0, 0.9, 0.55);
+  if (Object.prototype.hasOwnProperty.call(bg, 'focus')) {
+    out.background.focus = cleanFocus(bg.focus, out.background.focus);
+  }
 
   const scan = src.scan || {};
   if (Object.prototype.hasOwnProperty.call(scan, 'onStart')) out.scan.onStart = Boolean(scan.onStart);

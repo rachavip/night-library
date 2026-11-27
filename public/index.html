@@ -262,6 +262,10 @@
         <p class="hint">选一张本地图片，或填书籍目录里图片的相对路径。</p>
         <label class="file-btn">选择本地图片<input id="bg-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden></label>
         <label class="field">或图片路径<input id="bg-path" type="text" placeholder="例如 壁纸/书房.jpg"></label>
+        <div class="bg-crop-row">
+          <button type="button" class="ghost-btn" id="bg-crop-open">调整取景</button>
+          <span class="hint" id="bg-crop-note">居中</span>
+        </div>
         <label class="field range">暗度 <output id="bg-dim-out">55%</output><input id="bg-dim" type="range" min="0" max="90" value="55"></label>
         <label class="field range">虚化 <output id="bg-blur-out">0px</output><input id="bg-blur" type="range" min="0" max="20" value="0"></label>
       </section>
@@ -337,6 +341,25 @@
   </div>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <!-- 背景取景：框的比例等于窗口比例，框里看到的就是书架上的效果 -->
+  <div class="crop-modal" id="bg-crop" hidden role="dialog" aria-modal="true" aria-label="调整背景取景">
+    <div class="crop-head">
+      <div class="crop-title">
+        <strong>调整背景取景</strong>
+        <span class="crop-note" id="bg-crop-info"></span>
+      </div>
+      <button type="button" class="icon-btn" id="bg-crop-close" aria-label="取消取景">×</button>
+    </div>
+    <div class="crop-stage" id="bg-crop-stage">
+      <div class="crop-frame" id="bg-crop-frame" tabindex="0" role="application" aria-label="拖动图片，选择要保留的部分"></div>
+    </div>
+    <p class="crop-hint">框的比例就是浏览器窗口的比例，框里看到的就是书架上的效果。按住图片拖动（或用方向键微调），把要保留的那一块——通常是上半身和人脸——挪进框里，就不会出现只剩半张脸。</p>
+    <div class="crop-foot">
+      <button type="button" class="ghost-btn" id="bg-crop-reset">回到居中</button>
+      <button type="button" class="primary-btn" id="bg-crop-ok">就用这块</button>
+    </div>
+  </div>
   <script src="/js/library.js"></script>
   <script src="/js/music.js"></script>
   <script src="/js/settings.js"></script>

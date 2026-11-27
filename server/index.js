@@ -100,6 +100,76 @@ function allShelves() {
   return shelvesState.collections.concat(autoShelves);
 }
 
+// 一条竖着的分组列表里出现两个「西游记」，读者只会以为自己点错。自动组按书名
+// 高频词生成，手动组按读者意愿生成，两边迟早撞名，这里统一收成一条：
+// 手动组活下来（它可改可删，自动组写不进去），自动组算出来的书并进去，该关键词
+// 同时收起，扫描时不会再长出一个副本。另外两种少见的重名（手动与手动、自动与
+// 自动）也一并处理，规则同样是「同名即同一组」。
+function consolidateShelves() {
+  let changed = false;
+
+  // 手动组之间同名：并进先建的那条，后来者消失，书一本不丢。
+  const handByName = new Map();
+  shelvesState.collections.slice().forEach(item => {
+    const key = collections.nameKey(item.name);
+    if (!key) return;
+    const first = handByName.get(key);
+    if (!first) {
+      handByName.set(key, item);
+      return;
+    }
+    const folded = collections.merge(shelvesState, item.id, first.id);
+    if (!folded) return;
+    handByName.set(key, folded.item);
+    changed = true;
+    console.log(`[series] 合并同名丛书「${folded.item.name}」，接手 ${folded.moved} 本`);
+  });
+
+  const silenced = [];
+  const seenAuto = new Map();
+  autoShelves.forEach(shelf => {
+    const key = collections.nameKey(shelf.name);
+    if (!key) return;
+    const hand = handByName.get(key);
+    if (hand) {
+      const set = new Set(hand.bookIds);
+      shelf.bookIds.forEach(id => set.add(id));
+      if (set.size !== hand.bookIds.length) {
+        hand.bookIds = Array.from(set);
+        hand.updatedAt = new Date().toISOString();
+      }
+      silenced.push(shelf.keyword);
+      console.log(`[series] 「${shelf.name}」自动组并入同名丛书，共 ${hand.bookIds.length} 本`);
+      return;
+    }
+    // 两条自动组撞名（以前版本改过名留下的）：书多的那条留下。
+    const twin = seenAuto.get(key);
+    if (!twin) {
+      seenAuto.set(key, shelf);
+      return;
+    }
+    const keep = shelf.bookIds.length > twin.bookIds.length ? shelf : twin;
+    const drop = keep === shelf ? twin : shelf;
+    seenAuto.set(key, keep);
+    silenced.push(drop.keyword);
+    console.log(`[series] 两条自动组都叫「${shelf.name}」，只留「${keep.keyword}」`);
+  });
+
+  silenced.forEach(keyword => {
+    if (series.mute(seriesState, keyword, true)) changed = true;
+  });
+  return changed;
+}
+
+// 合并结果要落盘，否则下次启动又从旧数据算一遍。
+async function tidyShelves() {
+  if (!consolidateShelves()) return false;
+  await collections.save(cfg, shelvesState);
+  await series.save(cfg, seriesState);
+  refreshSeries();
+  return true;
+}
+
 function bookStatus(book) {
   return reading.statusOf(book, progress);
 }
@@ -255,6 +325,9 @@ app.put('/api/settings/background', async (req, res) => {
       try { await fsp.unlink(path.join(bgDir, old.slice(9))); } catch (e) { /* ignore */ }
     }
     data = 'uploaded:' + name;
+    // A brand-new image starts centred: the old framing means nothing on a
+    // different picture. The framing dialog opens right after the upload.
+    settings.background.focus = { x: 50, y: 50 };
   } else if (data) {
     data = data.replace(/^\/+/, '').slice(0, 500);
     if (data.includes('..')) return res.status(400).json({ error: '图片路径不能包含 ..' });
@@ -270,9 +343,18 @@ app.put('/api/settings/background', async (req, res) => {
   }
 });
 
+// `?src=` previews a path that has not been saved yet, so the framing dialog can
+// show what the reader just typed. Only images under the books dir, no traversal.
 app.get('/api/background', (req, res) => {
-  const data = settings.background.data;
-  if (!settings.background.enabled || !data) return res.status(404).end();
+  let data = settings.background.data;
+  const preview = String(req.query.src || '').trim();
+  if (preview) {
+    data = preview.replace(/^\/+/, '');
+    if (data.includes('..')) return res.status(400).end();
+    if (!/\.(png|jpe?g|webp|gif)$/i.test(data)) return res.status(400).end();
+  } else if (!settings.background.enabled || !data) {
+    return res.status(404).end();
+  }
   let file;
   if (data.startsWith('uploaded:')) {
     file = path.join(cfg.dataDir, 'backgrounds', data.slice(9));
@@ -283,7 +365,7 @@ app.get('/api/background', (req, res) => {
   }
   const ext = path.extname(file).slice(1).toLowerCase();
   const type = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : ext === 'gif' ? 'image/gif' : 'image/jpeg';
-  serveFile(req, res, file, type, { 'Cache-Control': 'public, max-age=3600' });
+  serveFile(req, res, file, type, { 'Cache-Control': preview ? 'no-store' : 'public, max-age=3600' });
 });
 
 /* ---------- music proxy (Subsonic compatible) ---------- */
@@ -720,8 +802,18 @@ app.post('/api/reading/ping', async (req, res) => {
 });
 
 app.get('/api/reading/summary', (req, res) => {
-  res.json(reading.summary(readingState, { books: currentIndex.books, progress }));
+  // 左栏「在读」「读完」后面的数字就是点下去会看到的册数，所以和书架默认视图一样
+  // 不含已隐藏的书，否则按钮写 40、点开只有 37。
+  const visible = currentIndex.books.filter(b => !hiddenStore.has(hiddenState, b.id));
+  res.json(reading.summary(readingState, { books: visible, progress }));
 });
+
+// 分组后面标的册数同样要等于点进去的册数：隐藏的书在书架上不显示，这里也不数。
+function shownCount(bookIds) {
+  let n = 0;
+  (bookIds || []).forEach(id => { if (!hiddenStore.has(hiddenState, id)) n++; });
+  return n;
+}
 
 /* ---------- shelves: hand-built, plus the ones titles suggest ---------- */
 app.get('/api/collections', (req, res) => {
@@ -729,7 +821,7 @@ app.get('/api/collections', (req, res) => {
     collections: allShelves().map(c => ({
       id: c.id,
       name: c.name,
-      count: c.bookIds.length,
+      count: shownCount(c.bookIds),
       bookIds: c.bookIds,
       auto: !!c.auto,
       keyword: c.keyword || null,
@@ -744,6 +836,8 @@ app.post('/api/series/restore', async (req, res) => {
   seriesState.muted = [];
   await series.save(cfg, seriesState);
   refreshSeries();
+  // 放回来的自动组若与手动组同名，会立刻被再合并一次，左栏不会因此多出一条。
+  await tidyShelves();
   res.json({ ok: true, collections: autoShelves.length });
 });
 
@@ -753,7 +847,7 @@ function shelfShape(c) {
   return {
     id: c.id,
     name: c.name,
-    count: c.bookIds.length,
+    count: shownCount(c.bookIds),
     bookIds: c.bookIds,
     auto: !!c.auto,
     keyword: c.keyword || null,
@@ -766,7 +860,7 @@ function clashOf(rawName, selfId) {
   const key = collections.nameKey(rawName);
   if (!key) return null;
   const hit = allShelves().find(s => s.id !== selfId && collections.nameKey(s.name) === key);
-  return hit ? { id: hit.id, name: hit.name, count: hit.bookIds.length, auto: !!hit.auto } : null;
+  return hit ? { id: hit.id, name: hit.name, count: shownCount(hit.bookIds), auto: !!hit.auto } : null;
 }
 
 // A group worked out from titles cannot be written to, so merging *into* one
@@ -1126,6 +1220,8 @@ async function runScan(reason) {
     const stale = syncShelves();
     if (stale.shelves) await collections.save(cfg, shelvesState);
     if (stale.hidden) await hiddenStore.save(cfg, hiddenState);
+    // 新书进来可能给某个手动组凑出同名自动组，扫完顺手合并。
+    await tidyShelves();
     const st = currentIndex.stats || {};
     console.log(`[scan/${reason}] ${currentIndex.count} 册 · 复用 ${st.reused || 0} · 新刮 ${st.scraped || 0} · ${Date.now() - started}ms`);
     return {
@@ -1199,6 +1295,8 @@ async function start() {
   // Titles are already on disk, so the rail has its series before the first
   // request — no need to wait for a scan.
   refreshSeries();
+  // 老数据里可能已经躺着两条同名的分组，启动时先收成一条再对外服务。
+  await tidyShelves();
 
   applyScanSettings();
 

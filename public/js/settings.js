@@ -8,6 +8,12 @@
   var pendingTypeface = 'kai';
   var pendingBg = null; // { data, enabled }
   var bgVersion = 0;
+  // 取景位置：背景图铺满整页时留下哪一块，百分比，50/50 即居中。
+  var bgFocus = { x: 50, y: 50 };
+  // 取景对话框的临时状态：原图尺寸、拖动起点。
+  var cropNatural = null;
+  var cropStart = { x: 50, y: 50 };
+  var cropDrag = null;
 
   var drawer = document.getElementById('settings-drawer');
   var scrim = document.getElementById('drawer-scrim');
@@ -97,11 +103,153 @@
     if (pendingBg) { bg = { data: pendingBg.data, enabled: pendingBg.enabled, dim: bg.dim, blur: bg.blur }; }
     if (bg.enabled && bg.data) {
       backdrop.style.backgroundImage = 'url("/api/background?v=' + bgVersion + '")';
+      // 取景位置：cover 裁掉的部分由 background-position 决定。
+      backdrop.style.backgroundPosition = bgFocus.x + '% ' + bgFocus.y + '%';
       backdrop.style.setProperty('--bg-dim', String(bg.dim != null ? bg.dim : 0.55));
       backdrop.style.setProperty('--bg-blur', (bg.blur || 0) + 'px');
     } else {
       backdrop.style.backgroundImage = '';
     }
+  }
+
+  function focusLabel() {
+    if (Math.abs(bgFocus.x - 50) < 0.6 && Math.abs(bgFocus.y - 50) < 0.6) return '居中';
+    return '水平 ' + Math.round(bgFocus.x) + '% · 垂直 ' + Math.round(bgFocus.y) + '%';
+  }
+
+  // 抽屉里那行小字，说明当前取景，让「会不会把脸裁掉」这件事有据可查。
+  function updateFocusNote() {
+    var note = el('bg-crop-note');
+    if (!note) return;
+    var has = Boolean(el('bg-path').value.trim()) ||
+      Boolean(pendingBg && pendingBg.data) ||
+      Boolean(settings && settings.background && settings.background.enabled && settings.background.data);
+    note.textContent = has ? '取景：' + focusLabel() : '未选图片';
+  }
+
+  /* ---------- 背景取景 ---------- */
+  // 图的来源：正在输入的路径优先（还没保存也能预览），否则用已保存的那张。
+  function currentBgSrc() {
+    var typed = el('bg-path').value.trim();
+    if (typed) return '/api/background?src=' + encodeURIComponent(typed);
+    var data = settings && settings.background ? settings.background.data : '';
+    if (!data) return '';
+    return '/api/background?v=' + (bgVersion || Date.now());
+  }
+
+  function clampPct(v) { return Math.max(0, Math.min(100, v)); }
+
+  function openCrop() {
+    var src = currentBgSrc();
+    if (!src) { toastFn('先选一张背景图，再来调取景'); return; }
+    cropStart = { x: bgFocus.x, y: bgFocus.y };
+    cropNatural = null;
+    el('bg-crop').hidden = false;
+    el('bg-crop-frame').style.backgroundImage = 'url("' + src + '")';
+    el('bg-crop-info').textContent = '正在载入图片…';
+    layoutCrop();
+    syncFocus();
+    el('bg-crop-frame').focus();
+    // 原图尺寸只用来算「会裁掉多少」，取景本身不依赖它。
+    var probe = new Image();
+    probe.onload = function () {
+      cropNatural = { w: probe.naturalWidth, h: probe.naturalHeight };
+      updateCropInfo();
+    };
+    probe.onerror = function () {
+      el('bg-crop-info').textContent = '这张图读不出来，检查一下路径或重新上传';
+    };
+    probe.src = src;
+  }
+
+  function closeCrop(revert) {
+    if (revert) {
+      bgFocus = { x: cropStart.x, y: cropStart.y };
+      applyBackground();
+      updateFocusNote();
+    }
+    el('bg-crop').hidden = true;
+    el('bg-crop-frame').classList.remove('is-dragging');
+    cropDrag = null;
+    cropNatural = null;
+  }
+
+  // 对话框中间的框按窗口比例生成，所以框里看到的就是书架上的效果。
+  function layoutCrop() {
+    if (el('bg-crop').hidden) return;
+    var stage = el('bg-crop-stage');
+    var frame = el('bg-crop-frame');
+    var ar = window.innerWidth / Math.max(1, window.innerHeight);
+    var availW = Math.max(160, stage.clientWidth - 6);
+    var availH = Math.max(90, stage.clientHeight - 6);
+    var w = availW;
+    var h = w / ar;
+    if (h > availH) { h = availH; w = h * ar; }
+    frame.style.width = Math.round(w) + 'px';
+    frame.style.height = Math.round(h) + 'px';
+    updateCropInfo();
+  }
+
+  // cover 之后图片比框大出来的部分，就是可以挪动的余量。
+  function cropOverflow() {
+    var frame = el('bg-crop-frame');
+    var fw = frame.clientWidth;
+    var fh = frame.clientHeight;
+    if (!cropNatural || !fw || !fh) return { x: 0, y: 0 };
+    var ia = cropNatural.w / cropNatural.h;
+    var fa = fw / fh;
+    var sw = ia > fa ? fh * ia : fw;
+    var sh = ia > fa ? fh : fw / ia;
+    return { x: Math.max(0, sw - fw), y: Math.max(0, sh - fh) };
+  }
+
+  function syncFocus() {
+    el('bg-crop-frame').style.backgroundPosition = bgFocus.x + '% ' + bgFocus.y + '%';
+    updateCropInfo();
+    updateFocusNote();
+    // 让背后的真实页面同步动起来，取景时就能看到最终效果。
+    applyBackground();
+  }
+
+  function ratioText(a) {
+    return (Math.round(a * 100) / 100) + ' : 1';
+  }
+
+  function updateCropInfo() {
+    var out = el('bg-crop-info');
+    if (!out || el('bg-crop').hidden) return;
+    var fa = window.innerWidth / Math.max(1, window.innerHeight);
+    if (!cropNatural) {
+      out.textContent = '页面比例 ' + ratioText(fa);
+      return;
+    }
+    var ia = cropNatural.w / cropNatural.h;
+    var text = '原图 ' + cropNatural.w + '×' + cropNatural.h + '（' + ratioText(ia) + '） · 页面 ' + ratioText(fa);
+    if (Math.abs(ia - fa) / fa > 0.01) {
+      var cut = ia > fa ? (1 - fa / ia) : (1 - ia / fa);
+      text += ' · 铺满需裁掉' + (ia > fa ? '左右' : '上下') + '约 ' + Math.round(cut * 100) + '%';
+    } else {
+      text += ' · 比例刚好，几乎不裁';
+    }
+    out.textContent = text;
+  }
+
+  // 拖动：图片跟着手指走，所以位置百分比反向变化。
+  function dragFocus(dx, dy) {
+    var ov = cropOverflow();
+    if (ov.x > 0) bgFocus.x = clampPct(bgFocus.x - (dx / ov.x) * 100);
+    if (ov.y > 0) bgFocus.y = clampPct(bgFocus.y - (dy / ov.y) * 100);
+    bgFocus.x = Math.round(bgFocus.x * 10) / 10;
+    bgFocus.y = Math.round(bgFocus.y * 10) / 10;
+    syncFocus();
+  }
+
+  function nudgeFocus(dx, dy) {
+    // 只挪有余量的方向，否则按了键数字变了、画面没动，反而让人以为坏了。
+    var ov = cropOverflow();
+    if (ov.x > 0) bgFocus.x = clampPct(Math.round((bgFocus.x + dx) * 10) / 10);
+    if (ov.y > 0) bgFocus.y = clampPct(Math.round((bgFocus.y + dy) * 10) / 10);
+    syncFocus();
   }
 
   function applyMusicMode(mode) {
@@ -255,6 +403,12 @@
     el('bg-dim-out').textContent = el('bg-dim').value + '%';
     el('bg-blur').value = settings.background.blur || 0;
     el('bg-blur-out').textContent = el('bg-blur').value + 'px';
+    var focus = (settings.background && settings.background.focus) || {};
+    bgFocus = {
+      x: Number.isFinite(Number(focus.x)) ? Number(focus.x) : 50,
+      y: Number.isFinite(Number(focus.y)) ? Number(focus.y) : 50
+    };
+    updateFocusNote();
     applyMusicMode((settings.music && settings.music.mode) || 'embed');
     var envHint = el('music-env-hint');
     if (envHint) envHint.hidden = !settings.music.urlFromEnv;
@@ -298,7 +452,8 @@
           Boolean(settings.background && settings.background.enabled && settings.background.data),
         data: pendingBg && pendingBg.data !== undefined ? pendingBg.data : settings.background.data,
         dim: Number(el('bg-dim').value) / 100,
-        blur: Number(el('bg-blur').value)
+        blur: Number(el('bg-blur').value),
+        focus: { x: bgFocus.x, y: bgFocus.y }
       },
       music: {
         mode: pendingMusicMode,
@@ -450,14 +605,68 @@
     var v = el('bg-path').value.trim();
     pendingBg = { data: v, enabled: Boolean(v) };
     applyBackground();
+    updateFocusNote();
   });
   el('bg-clear').addEventListener('click', function () {
     el('bg-path').value = '';
     pendingBg = { data: '', enabled: false };
     settings.background.enabled = false;
+    bgFocus = { x: 50, y: 50 };
     applyBackground();
+    updateFocusNote();
     toastFn('背景已清除，记得保存');
   });
+
+  /* ---------- 取景对话框 ---------- */
+  el('bg-crop-open').addEventListener('click', openCrop);
+  el('bg-crop-close').addEventListener('click', function () { closeCrop(true); });
+  el('bg-crop-ok').addEventListener('click', function () {
+    closeCrop(false);
+    updateFocusNote();
+    toastFn('取景已设为' + focusLabel() + '，保存设置后生效');
+  });
+  el('bg-crop-reset').addEventListener('click', function () {
+    bgFocus = { x: 50, y: 50 };
+    syncFocus();
+  });
+
+  var cropFrame = el('bg-crop-frame');
+  cropFrame.addEventListener('pointerdown', function (e) {
+    if (e.button != null && e.button !== 0) return;
+    cropDrag = { x: e.clientX, y: e.clientY };
+    cropFrame.classList.add('is-dragging');
+    cropFrame.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  cropFrame.addEventListener('pointermove', function (e) {
+    if (!cropDrag) return;
+    var dx = e.clientX - cropDrag.x;
+    var dy = e.clientY - cropDrag.y;
+    cropDrag = { x: e.clientX, y: e.clientY };
+    dragFocus(dx, dy);
+  });
+  function endDrag(e) {
+    if (!cropDrag) return;
+    cropDrag = null;
+    cropFrame.classList.remove('is-dragging');
+    if (e && e.pointerId != null && cropFrame.hasPointerCapture && cropFrame.hasPointerCapture(e.pointerId)) {
+      cropFrame.releasePointerCapture(e.pointerId);
+    }
+  }
+  cropFrame.addEventListener('pointerup', endDrag);
+  cropFrame.addEventListener('pointercancel', endDrag);
+  cropFrame.addEventListener('keydown', function (e) {
+    var map = { ArrowLeft: [1, 0], ArrowRight: [-1, 0], ArrowUp: [0, 1], ArrowDown: [0, -1] };
+    var step = map[e.key];
+    if (!step) return;
+    e.preventDefault();
+    nudgeFocus(step[0], step[1]);
+  });
+  document.addEventListener('keydown', function (e) {
+    if (el('bg-crop').hidden) return;
+    if (e.key === 'Escape') { e.preventDefault(); closeCrop(true); }
+  });
+  window.addEventListener('resize', layoutCrop);
 
   el('bg-file').addEventListener('change', function (e) {
     var file = e.target.files && e.target.files[0];
@@ -479,10 +688,27 @@
         var snap = await fetch('/api/settings').then(function (r) { return r.json(); });
         settings.background.data = snap.background.data;
         settings.background.enabled = true;
+        // 新图从居中开始，旧图的取景对不上新构图。
+        var fresh = (snap.background && snap.background.focus) || { x: 50, y: 50 };
+        bgFocus = { x: Number(fresh.x) || 50, y: Number(fresh.y) || 50 };
         el('bg-path').value = '';
         pendingBg = null;
         applyBackground();
-        toastFn('背景已上传，记得保存其他修改');
+        updateFocusNote();
+        // 比例和窗口不一样的图铺满就会裁，直接打开取景，别等用户发现头像少了半边。
+        var probe = new Image();
+        probe.onload = function () {
+          var ia = probe.naturalWidth / Math.max(1, probe.naturalHeight);
+          var fa = window.innerWidth / Math.max(1, window.innerHeight);
+          if (Math.abs(ia - fa) / fa > 0.02) {
+            toastFn('这张图和页面比例不同，先确认保留哪一块');
+            openCrop();
+          } else {
+            toastFn('背景已上传，比例刚好，不用调整');
+          }
+        };
+        probe.onerror = function () { openCrop(); };
+        probe.src = reader.result;
       } catch (err) {
         toastFn(err.message);
       }
