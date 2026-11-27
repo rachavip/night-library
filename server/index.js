@@ -7,6 +7,7 @@ const library = require('./library');
 const reading = require('./reading');
 const collections = require('./collections');
 const series = require('./series');
+const taste = require('./taste');
 const hiddenStore = require('./hidden');
 const notes = require('./notes');
 const converter = require('./convert');
@@ -258,6 +259,8 @@ let shelvesState = collections.emptyState();
 // only holds the two things a person decides: a new name, and which to hide.
 let seriesState = series.emptyState();
 let autoShelves = [];
+// 搜过的词：只存词与次数，「猜你想看」拿它给相关的书加分。
+let tasteState = taste.emptyState();
 // Books put away by hand: kept in the index, out of the default shelf.
 let hiddenState = hiddenStore.emptyState();
 let notesState = notes.emptyState();
@@ -523,7 +526,7 @@ app.get('/api/stats', (req, res) => {
 });
 
 app.get('/api/books', (req, res) => {
-  const { sort = 'title', order = 'asc', q = '', format = '', status = '', collection = '',
+  const { sort = 'guess', order = 'desc', q = '', format = '', status = '', collection = '',
     hidden = '', limit = '' } = req.query;
   let books = currentIndex.books;
   // Default is the shelf people expect: what they have not put away.
@@ -544,9 +547,27 @@ app.get('/api/books', (req, res) => {
       [b.title, b.author, b.path].some(v => String(v || '').toLowerCase().includes(needle))
     );
   }
-  // "recent" sorts by when it was last opened, which lives in progress rather
-  // than in the book record, so it cannot be handled by library.sortBooks.
-  if (sort === 'recent') {
+  // 「猜你想看」要用到阅读进度和搜索日志，所以在这里排，不进 library.sortBooks。
+  // 高分在前（order=desc 为默认）；同分时最近读过的先，再按书名，同一套分册的
+  // 卷次顺序不会被入库时间打乱。
+  let ranked = null;
+  if (sort === 'guess') {
+    ranked = taste.rank(currentIndex.books, tasteState, { stamp: currentIndex.scannedAt || '' });
+    const scoreOf = b => (ranked.get(b.id) || {}).score || 0;
+    const dir = order === 'asc' ? -1 : 1;
+    books = books.slice().sort((a, b) => {
+      const sa = scoreOf(a);
+      const sb = scoreOf(b);
+      if (sa !== sb) return (sb - sa) * dir;
+      const ta = (progress[a.id] || {}).updatedAt || '';
+      const tb = (progress[b.id] || {}).updatedAt || '';
+      if (ta !== tb) return tb.localeCompare(ta);
+      // 再按书名，同一套的分册保持原本的卷次顺序，而不是入库顺序。
+      return String(a.title || '').localeCompare(String(b.title || ''), 'zh-CN', { numeric: true, sensitivity: 'base' });
+    });
+  } else if (sort === 'recent') {
+    // "recent" sorts by when it was last opened, which lives in progress rather
+    // than in the book record, so it cannot be handled by library.sortBooks.
     books = books.slice().sort((a, b) => {
       const ta = (progress[a.id] || {}).updatedAt || '';
       const tb = (progress[b.id] || {}).updatedAt || '';
@@ -558,7 +579,19 @@ app.get('/api/books', (req, res) => {
   const cap = Number(limit);
   if (Number.isFinite(cap) && cap > 0) books = books.slice(0, cap);
   const index = shelfIndex();
-  res.json({ count: books.length, books: books.map(b => decorate(b, index)) });
+  res.json({
+    count: books.length,
+    sort: sort,
+    // 只有按「猜你想看」排时才回传理由，别给别的排序平白加几十 KB。
+    books: books.map(b => {
+      const row = decorate(b, index);
+      if (ranked) {
+        const hit = ranked.get(b.id);
+        row.taste = hit ? { score: Math.round(hit.score * 10) / 10, why: hit.why } : null;
+      }
+      return row;
+    })
+  });
 });
 
 // Hide or unhide a batch. Ids that are already in the wanted state are
@@ -806,6 +839,30 @@ app.get('/api/reading/summary', (req, res) => {
   // 不含已隐藏的书，否则按钮写 40、点开只有 37。
   const visible = currentIndex.books.filter(b => !hiddenStore.has(hiddenState, b.id));
   res.json(reading.summary(readingState, { books: visible, progress }));
+});
+
+/* ---------- 猜你想看 ---------- */
+// 书架默认按这个排：书名高频词 + 搜过的词。这里只暴露「记了什么」，方便在设置
+// 里看清楚、也能一键清空——排序是拿读者的行为算的，就该让读者看得见。
+app.get('/api/taste', (req, res) => {
+  res.json({
+    searches: taste.total(tasteState),
+    terms: taste.list(tasteState).slice(0, 12),
+    keywords: taste.topKeywords(currentIndex.books, 6)
+  });
+});
+
+app.post('/api/taste/log', async (req, res) => {
+  const hit = taste.record(tasteState, (req.body || {}).q);
+  if (!hit) return res.json({ ok: false, skipped: true });
+  await taste.save(cfg, tasteState);
+  res.json({ ok: true, q: hit.q, count: hit.count });
+});
+
+app.post('/api/taste/reset', async (req, res) => {
+  const removed = taste.clear(tasteState);
+  await taste.save(cfg, tasteState);
+  res.json({ ok: true, removed });
 });
 
 // 分组后面标的册数同样要等于点进去的册数：隐藏的书在书架上不显示，这里也不数。
@@ -1290,6 +1347,7 @@ async function start() {
   readingState = await reading.load(cfg);
   shelvesState = await collections.load(cfg);
   seriesState = await series.load(cfg);
+  tasteState = await taste.load(cfg);
   hiddenState = await hiddenStore.load(cfg);
   notesState = await notes.load(cfg);
   // Titles are already on disk, so the rail has its series before the first

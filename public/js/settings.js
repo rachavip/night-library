@@ -420,10 +420,60 @@
     if (window.nightMusic) window.nightMusic.configure(settings.music);
   }
 
+  /* ---------- 猜你想看 ---------- */
+  // 排序是拿读者的搜索词算的，那就让他看得见记了什么，也能一键忘掉。
+  function escText(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  async function loadTaste() {
+    var note = el('taste-note');
+    var list = el('taste-terms');
+    if (!note || !list) return;
+    try {
+      var data = await fetch('/api/taste').then(function (r) { return r.json(); });
+      var terms = data.terms || [];
+      var searches = data.searches || 0;
+      var keywords = data.keywords || [];
+      note.textContent = searches
+        ? '已记录 ' + searches + ' 次搜索、' + terms.length + ' 个词。清空后排序只用书名里的高频词。'
+        : '还没有记录搜索。搜过的词会出现在这里，也让相关的书往前排。';
+      var html = '';
+      terms.forEach(function (t) {
+        html += '<li><span>' + escText(t.q) + '</span><em>' + t.count + ' 次</em></li>';
+      });
+      if (keywords.length) {
+        html += '<li class="taste-kw"><span>书名里的热点</span><em>' +
+          keywords.map(function (k) { return escText(k.keyword) + '×' + k.count; }).join('、') +
+          '</em></li>';
+      }
+      list.innerHTML = html;
+    } catch (e) {
+      note.textContent = '读不到记录，排序照常按书名里的高频词走。';
+      list.innerHTML = '';
+    }
+  }
+
+  var tasteReset = el('taste-reset');
+  if (tasteReset) {
+    tasteReset.addEventListener('click', async function () {
+      if (!window.confirm('清空搜索记录？清空后「猜你想看」只按书名里的高频词排。')) return;
+      try {
+        await fetch('/api/taste/reset', { method: 'POST' });
+        await loadTaste();
+        toastFn('搜索记录已清空');
+      } catch (e) {
+        toastFn('清空失败：' + e.message);
+      }
+    });
+  }
+
   function openDrawer() {
     drawer.hidden = false;
     scrim.hidden = false;
     applyAll(settings);
+    loadTaste();
   }
 
   function closeDrawer() {

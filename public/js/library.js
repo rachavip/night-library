@@ -2,7 +2,8 @@
   'use strict';
 
   var state = {
-    sort: 'title', order: 'asc', q: '', format: '',
+    // 默认按「猜你想看」排：书名高频词越热的那一类越靠前，搜过的词再加权。
+    sort: 'guess', order: 'desc', q: '', format: '',
     view: 'grid', status: '', shelf: '',
     // '' = the shelf people expect (hidden books left out), 'only' = the hidden
     // pile itself, 'all' = everything including it.
@@ -124,16 +125,20 @@
     var title = '<span class="book-title">' + esc(book.title || '未命名') + '</span>';
     var author = '<span class="book-author">' + esc(book.author || '佚名') + '</span>';
     var progress = '<span class="progress-line"><i style="width:' + percent + '%"></i></span>';
+    // 按「猜你想看」排的时候，鼠标停在书上能看见它凭什么排这么前。
+    var why = (state.sort === 'guess' && book.taste && book.taste.why)
+      ? ' title="' + esc('猜你想看：' + book.taste.why) + '"'
+      : '';
 
     if (state.view === 'list') {
       var mark = book.status === 'finished' ? '读完' : (percent ? percent + '%' : '未读');
-      return '<a class="' + cls + '" href="' + href + '"' + target + ' draggable="false"' + dataId + ' aria-label="阅读《' + esc(book.title) + '》">' +
+      return '<a class="' + cls + '" href="' + href + '"' + target + ' draggable="false"' + dataId + why + ' aria-label="阅读《' + esc(book.title) + '》">' +
         cover + title + author +
         '<span class="list-format">' + esc(book.format.toUpperCase()) + '</span>' +
         '<span class="list-progress">' + mark + '</span>' +
         '</a>';
     }
-    return '<a class="' + cls + '" href="' + href + '"' + target + ' draggable="false"' + dataId + ' aria-label="阅读《' + esc(book.title) + '》">' +
+    return '<a class="' + cls + '" href="' + href + '"' + target + ' draggable="false"' + dataId + why + ' aria-label="阅读《' + esc(book.title) + '》">' +
       cover + title + author + progress + '</a>';
   }
 
@@ -305,13 +310,13 @@
     var t = totals();
     railTotal.textContent = visibleCount + ' 册可见' + (hiddenCount ? ' · ' + hiddenCount + ' 隐藏' : '');
     // 这里不放「全部」：格式条最前面已经有一个，写两遍是重复。
+    // 「隐藏」也不放：格式条末尾那个同样是它，入口只留一个。
     // 从「在读」这类筛选退出时，再点一次当前项就回到全部。
     railStates.innerHTML =
       railItem('在读', t ? t.reading : '—',
         state.status === 'reading' && state.hidden !== 'only', 'data-nav="reading"') +
       railItem('读完', t ? t.finished : '—',
-        state.status === 'finished' && state.hidden !== 'only', 'data-nav="finished"') +
-      railItem('隐藏', hiddenCount, state.hidden === 'only', 'data-nav="hidden"', 'is-hidden-item');
+        state.status === 'finished' && state.hidden !== 'only', 'data-nav="finished"');
 
     // 两组：软件按书名自己归的（可以改名、可以收起）和手动建的。
     // 自动的排前面，它们通常就是整柜书。
@@ -461,9 +466,6 @@
       // 再点一次当前项就取消筛选，回到「全部」——左侧没有单独的「全部」了。
       state.status = state.status === nav ? '' : nav;
       state.hidden = '';
-    } else if (nav === 'hidden') {
-      state.status = '';
-      state.hidden = state.hidden === 'only' ? '' : 'only';
     }
     renderRail();
     renderFilters();
@@ -991,7 +993,7 @@
     sheetHide.disabled = true;
     try {
       await send('/api/books/hide', 'POST', { ids: [book.id], hidden: want });
-      toast(want ? '已隐藏《' + name + '》，左侧「隐藏」里能找到' : '已取消隐藏《' + name + '》');
+      toast(want ? '已隐藏《' + name + '》，顶部格式条最右的「隐藏」里能找到' : '已取消隐藏《' + name + '》');
       closeSheet();
       await renderStats();
       await renderBooks();
@@ -1391,21 +1393,67 @@
     }
   }
 
+  // 升/降序按钮在「猜你想看」下说「最热/最冷」更直白，别的排序还是升序降序。
+  function syncOrder() {
+    var btn = document.getElementById('order');
+    if (!btn) return;
+    if (state.sort === 'guess') {
+      btn.textContent = state.order === 'asc' ? '最冷在前' : '最热在前';
+      btn.title = state.order === 'asc' ? '现在最冷门的在前，点一下翻过来' : '现在最想看的在前，点一下翻过来';
+    } else {
+      btn.textContent = state.order === 'asc' ? '升序' : '降序';
+      btn.title = '切换升降序';
+    }
+  }
+
   var searchTimer;
+  var logTimer;
   document.getElementById('search').addEventListener('input', function (e) {
+    // 输入法还在拼字，上屏之前不算搜索。
+    if (e.isComposing) return;
     clearTimeout(searchTimer);
+    clearTimeout(logTimer);
     var value = e.target.value.trim();
     searchTimer = setTimeout(function () { state.q = value; renderBooks(); }, 180);
+    // 停手一秒二还在看这个结果，就当真的搜了这一次。
+    logTimer = setTimeout(function () { logSearch(value); }, 1200);
   });
+  // 回车是明确的「我就要找这个」，不用等。
+  document.getElementById('search').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') {
+      clearTimeout(logTimer);
+      logSearch(e.target.value.trim());
+    }
+  });
+
+  // 搜索也当一票：词本身记到服务端，「猜你想看」拿它给书名/作者命中的书加分，
+  // 同一个词搜得越多加得越多。只发词，不发打开了哪本书。
+  var lastLog = { q: '', at: 0 };
+  function logSearch(text) {
+    var q = String(text || '').trim();
+    if (q.length < 2) return;
+    var now = Date.now();
+    // 输入法上屏与回车常常连着来，五秒内同一个词只记一次。
+    if (q === lastLog.q && now - lastLog.at < 5000) return;
+    lastLog = { q: q, at: now };
+    fetch('/api/taste/log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ q: q })
+    }).catch(function () {});
+  }
 
   document.getElementById('sort').addEventListener('change', function (e) {
     state.sort = e.target.value;
+    // 每种排序有自己的合理方向：猜你想看是最热在前，书名是 A→Z。
+    state.order = state.sort === 'guess' ? 'desc' : 'asc';
+    syncOrder();
     renderBooks();
   });
 
-  document.getElementById('order').addEventListener('click', function (e) {
+  document.getElementById('order').addEventListener('click', function () {
     state.order = state.order === 'asc' ? 'desc' : 'asc';
-    e.target.textContent = state.order === 'asc' ? '升序' : '降序';
+    syncOrder();
     renderBooks();
   });
 
@@ -1425,6 +1473,7 @@
   renderStats();
   loadShelves();
   renderReading();
+  syncOrder();
   renderBooks();
   renderContinue();
   setInterval(pollStats, 10000);

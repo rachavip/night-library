@@ -1126,16 +1126,16 @@ function sortKeyTitle(value) {
     .toLowerCase();
 }
 
+// Only three keys are left in the UI: 猜你想看 (handled in index.js, it needs
+// progress and the search log), 书名/作者, and 最近添加. Anything else falls
+// back to the title so an old bookmark cannot produce an odd order.
 function sortBooks(books, sort, order) {
-  const key = sort || 'title';
+  const key = sort || 'guess';
   const dir = order === 'desc' ? -1 : 1;
   const primary = b => {
-    if (key === 'title') return sortKeyTitle(b.title);
     if (key === 'author') return sortKeyTitle(b.author) || '\uffff';
-    if (key === 'path') return sortKeyTitle(path.basename(b.path || ''));
-    if (key === 'format') return String(b.format || '');
-    if (key === 'size') return b.size || 0;
-    return b.addedAt || '';
+    if (key === 'added') return b.addedAt || '';
+    return sortKeyTitle(b.title);
   };
   const compare = (a, b) => {
     const av = primary(a);

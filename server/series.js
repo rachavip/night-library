@@ -174,10 +174,13 @@ function candidatesOf(text) {
 
 /**
  * @param {Array<{id:string,title?:string}>} books
+ * @param {{maxGroups?:number}} [opts] 侧栏只要最热的几十组；「猜你想看」算分
+ *   时想要更长的长尾，就传一个更大的上限。
  * @returns {Array<{keyword:string, count:number, bookIds:string[]}>}
  */
-function detect(books) {
+function detect(books, opts) {
   const list = Array.isArray(books) ? books : [];
+  const maxGroups = opts && Number(opts.maxGroups) > 0 ? Number(opts.maxGroups) : MAX_GROUPS;
   // 先只存「出现在多少本书里」的计数，不存 id：一本 40 字的书名能派生出
   // 三百多个候选，把每个候选的 id 都留一份会白白吃掉几十兆内存。
   const counts = new Map();
@@ -227,7 +230,7 @@ function detect(books) {
     return picked;
   };
 
-  return kept.slice(0, MAX_GROUPS).map(c => ({
+  return kept.slice(0, maxGroups).map(c => ({
     keyword: c.key,
     count: c.count,
     bookIds: hitsOf(c.key)

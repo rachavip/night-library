@@ -30,15 +30,13 @@
       </label>
       <label class="sort-label">排序
         <select id="sort" aria-label="排序方式">
-          <option value="title" selected>书名</option>
-          <option value="path">文件名</option>
+          <option value="guess" selected>猜你想看</option>
           <option value="added">最近添加</option>
+          <option value="title">书名</option>
           <option value="author">作者</option>
-          <option value="size">文件大小</option>
-          <option value="format">格式</option>
         </select>
       </label>
-      <button class="ghost-btn" id="order" aria-label="切换升序或降序" title="切换升降序">升序</button>
+      <button class="ghost-btn" id="order" aria-label="切换升序或降序" title="切换升降序">最热在前</button>
       <div class="view-switch" role="group" aria-label="视图切换">
         <button type="button" data-view="grid" aria-pressed="true">书架</button>
         <button type="button" data-view="list" aria-pressed="false">列表</button>
@@ -255,6 +253,13 @@
             <span class="type-warn" hidden></span>
           </button>
         </div>
+      </section>
+
+      <section class="setting-group">
+        <div class="group-head"><h3>猜你想看</h3><button type="button" class="text-btn" id="taste-reset">清空记录</button></div>
+        <p class="hint">书架默认按这个排序：书名里反复出现的词越热，这一类书越靠前；你搜过的词也算一票，搜得越多，书名或作者沾边的书越往前。</p>
+        <p class="hint" id="taste-note">还没有记录搜索。</p>
+        <ul class="taste-terms" id="taste-terms"></ul>
       </section>
 
       <section class="setting-group">
