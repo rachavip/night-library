@@ -73,10 +73,11 @@
           </section>
           <section class="rail-group">
             <div class="rail-group-head">
-              <h2>丛书</h2>
+              <h2 title="书名里出现 5 次以上的词会自动成组，也可以自己新建">丛书</h2>
               <button type="button" class="rail-add" id="rail-series-new" aria-label="新建丛书">＋ 新建</button>
             </div>
             <div class="rail-items" id="rail-series"></div>
+            <button type="button" class="rail-restore" id="rail-series-reset" hidden>↺ 恢复</button>
           </section>
         </nav>
 
@@ -111,12 +112,12 @@
           <button type="button" class="ghost-btn" id="batch-unhide">取消隐藏</button>
           <button type="button" class="ghost-btn" id="batch-series">加入丛书</button>
           <button type="button" class="ghost-btn" id="batch-exit">退出整理</button>
-        </div>
-        <div class="series-picker" id="series-picker" hidden>
-          <div class="shelf-picker-list" id="series-picker-list"></div>
-          <div class="shelf-picker-new">
-            <input id="series-new-name" type="text" maxlength="40" placeholder="新丛书名，比如：西游记" aria-label="新丛书名称">
-            <button type="button" class="ghost-btn" id="series-new-btn">新建并加入</button>
+          <div class="series-picker" id="series-picker" hidden>
+            <div class="shelf-picker-list" id="series-picker-list"></div>
+            <div class="shelf-picker-new">
+              <input id="series-new-name" type="text" maxlength="40" placeholder="新丛书名，比如：西游记" aria-label="新丛书名称">
+              <button type="button" class="ghost-btn" id="series-new-btn">新建并加入</button>
+            </div>
           </div>
         </div>
 
@@ -148,6 +149,7 @@
       <div class="book-sheet-links">
         <button type="button" class="text-btn" id="book-sheet-notes">笔记与书签</button>
         <button type="button" class="text-btn" id="book-sheet-shelf-btn">加入书单</button>
+        <button type="button" class="text-btn" id="book-sheet-hide">隐藏</button>
       </div>
       <div class="book-sheet-shelves" id="book-sheet-shelves"></div>
       <div class="shelf-picker" id="shelf-picker" hidden>

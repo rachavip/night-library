@@ -6,6 +6,7 @@ const iconv = require('iconv-lite');
 const library = require('./library');
 const reading = require('./reading');
 const collections = require('./collections');
+const series = require('./series');
 const hiddenStore = require('./hidden');
 const notes = require('./notes');
 const converter = require('./convert');
@@ -81,16 +82,22 @@ function findBook(id) {
 
 // bookId -> [shelfId]. Built once per request so a shelf listing does not walk
 // every shelf for every book (816 books x 60 shelves would be 49k scans).
+// Auto series are folded in so a book shows both the shelves it was filed into
+// and the series its title puts it in.
 function shelfIndex() {
   const map = new Map();
-  shelvesState.collections.forEach(shelf => {
-    shelf.bookIds.forEach(id => {
-      const list = map.get(id);
-      if (list) list.push(shelf.id);
-      else map.set(id, [shelf.id]);
-    });
-  });
+  const add = (id, shelfId) => {
+    const list = map.get(id);
+    if (list) list.push(shelfId);
+    else map.set(id, [shelfId]);
+  };
+  shelvesState.collections.forEach(shelf => shelf.bookIds.forEach(id => add(id, shelf.id)));
+  autoShelves.forEach(shelf => shelf.bookIds.forEach(id => add(id, shelf.id)));
   return map;
+}
+
+function allShelves() {
+  return shelvesState.collections.concat(autoShelves);
 }
 
 function bookStatus(book) {
@@ -111,6 +118,12 @@ function decorate(book, index) {
   };
 }
 
+// 自动丛书完全由书名推出来，所以索引一变就重算。800 册书名扫一遍只要几毫秒，
+// 不值得为它做增量。
+function refreshSeries() {
+  autoShelves = series.build(currentIndex.books, seriesState);
+}
+
 // A renamed file gets a new id, so shelf entries can point at books that no
 // longer exist. Pruning after every scan keeps the counts honest.
 function syncShelves() {
@@ -119,6 +132,7 @@ function syncShelves() {
   if (removed) console.log(`[shelves] dropped ${removed} stale book id(s)`);
   const hiddenRemoved = hiddenStore.prune(hiddenState, valid);
   if (hiddenRemoved) console.log(`[hidden] dropped ${hiddenRemoved} stale book id(s)`);
+  refreshSeries();
   return { shelves: removed, hidden: hiddenRemoved };
 }
 
@@ -170,6 +184,10 @@ let progress = {};
 // Reading time per day, hand-built shelves, and highlights/bookmarks.
 let readingState = reading.emptyState();
 let shelvesState = collections.emptyState();
+// Series worked out from titles. Rebuilt on every index change; `seriesState`
+// only holds the two things a person decides: a new name, and which to hide.
+let seriesState = series.emptyState();
+let autoShelves = [];
 // Books put away by hand: kept in the index, out of the default shelf.
 let hiddenState = hiddenStore.emptyState();
 let notesState = notes.emptyState();
@@ -432,9 +450,9 @@ app.get('/api/books', (req, res) => {
   else if (hidden !== 'all') books = books.filter(b => !hiddenStore.has(hiddenState, b.id));
   if (format) books = books.filter(b => b.format === format);
   if (collection) {
-    const shelf = shelvesState.collections.find(c => c.id === collection);
-    if (!shelf) return res.status(404).json({ error: '没有找到这个书单' });
-    const ids = new Set(shelf.bookIds);
+    const found = allShelves().find(c => c.id === collection);
+    if (!found) return res.status(404).json({ error: '没有找到这个丛书' });
+    const ids = new Set(found.bookIds);
     books = books.filter(b => ids.has(b.id));
   }
   if (status) books = books.filter(b => bookStatus(b) === status);
@@ -496,6 +514,8 @@ app.post('/api/book/:id/rescan', async (req, res) => {
     if (at >= 0) currentIndex.books[at] = result.book;
     currentIndex.scannedAt = new Date().toISOString();
     await library.saveIndex(cfg, currentIndex);
+    // A corrected title can move this book into or out of a series.
+    refreshSeries();
 
     const before = result.previous;
     const ms = Date.now() - started;
@@ -703,24 +723,35 @@ app.get('/api/reading/summary', (req, res) => {
   res.json(reading.summary(readingState, { books: currentIndex.books, progress }));
 });
 
-/* ---------- hand-built shelves ---------- */
+/* ---------- shelves: hand-built, plus the ones titles suggest ---------- */
 app.get('/api/collections', (req, res) => {
   res.json({
-    collections: shelvesState.collections.map(c => ({
+    collections: allShelves().map(c => ({
       id: c.id,
       name: c.name,
       count: c.bookIds.length,
       bookIds: c.bookIds,
+      auto: !!c.auto,
+      keyword: c.keyword || null,
       createdAt: c.createdAt
-    }))
+    })),
+    // Keywords the reader folded away, so the rail can offer a way back.
+    muted: seriesState.muted.slice()
   });
+});
+
+app.post('/api/series/restore', async (req, res) => {
+  seriesState.muted = [];
+  await series.save(cfg, seriesState);
+  refreshSeries();
+  res.json({ ok: true, collections: autoShelves.length });
 });
 
 app.post('/api/collections', async (req, res) => {
   try {
     const item = collections.create(shelvesState, (req.body || {}).name);
     await collections.save(cfg, shelvesState);
-    res.json({ ok: true, collection: { ...item, count: 0 } });
+    res.json({ ok: true, collection: { ...item, count: 0, auto: false } });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -728,8 +759,29 @@ app.post('/api/collections', async (req, res) => {
 
 app.put('/api/collections/:id', async (req, res) => {
   const body = req.body || {};
-  const item = shelvesState.collections.find(c => c.id === req.params.id);
-  if (!item) return res.status(404).json({ error: '没有找到这个书单' });
+  const id = req.params.id;
+  // An auto series has no stored member list: the only thing worth writing is
+  // the name the reader prefers. An empty name falls back to the keyword.
+  if (id.indexOf('auto:') === 0) {
+    const keyword = id.slice(5);
+    if (!autoShelves.some(s => s.keyword === keyword)) {
+      return res.status(404).json({ error: '没有找到这个丛书' });
+    }
+    try {
+      if (body.name !== undefined) {
+        series.rename(seriesState, keyword, body.name);
+        await series.save(cfg, seriesState);
+        refreshSeries();
+      }
+      const fresh = autoShelves.find(s => s.keyword === keyword);
+      res.json({ ok: true, collection: { id, name: fresh.name, count: fresh.count, auto: true } });
+    } catch (e) {
+      res.status(400).json({ error: e.message });
+    }
+    return;
+  }
+  const item = shelvesState.collections.find(c => c.id === id);
+  if (!item) return res.status(404).json({ error: '没有找到这个丛书' });
   try {
     if (body.name !== undefined) collections.rename(shelvesState, item.id, body.name);
     // Adding/removing books and renaming in one call keeps the panel's save
@@ -744,8 +796,17 @@ app.put('/api/collections/:id', async (req, res) => {
 });
 
 app.delete('/api/collections/:id', async (req, res) => {
-  if (!collections.remove(shelvesState, req.params.id)) {
-    return res.status(404).json({ error: '没有找到这个书单' });
+  const id = req.params.id;
+  // Deleting an auto series would only last until the next scan, so it is
+  // recorded as "don't show this one" instead.
+  if (id.indexOf('auto:') === 0) {
+    series.mute(seriesState, id.slice(5), true);
+    await series.save(cfg, seriesState);
+    refreshSeries();
+    return res.json({ ok: true });
+  }
+  if (!collections.remove(shelvesState, id)) {
+    return res.status(404).json({ error: '没有找到这个丛书' });
   }
   await collections.save(cfg, shelvesState);
   res.json({ ok: true });
@@ -1002,8 +1063,12 @@ async function start() {
   progress = await library.loadProgress(cfg);
   readingState = await reading.load(cfg);
   shelvesState = await collections.load(cfg);
+  seriesState = await series.load(cfg);
   hiddenState = await hiddenStore.load(cfg);
   notesState = await notes.load(cfg);
+  // Titles are already on disk, so the rail has its series before the first
+  // request — no need to wait for a scan.
+  refreshSeries();
 
   applyScanSettings();
 

@@ -18,6 +18,7 @@
   var selectModeBtn = document.getElementById('select-mode');
   var railStates = document.getElementById('rail-states');
   var railSeries = document.getElementById('rail-series');
+  var railSeriesReset = document.getElementById('rail-series-reset');
   var railTotal = document.getElementById('rail-total');
   var batchBar = document.getElementById('batch-bar');
   var batchCount = document.getElementById('batch-count');
@@ -42,6 +43,9 @@
   var visibleCount = 0;
   var booksById = {};
   var shelves = [];
+  // Auto series are derived from titles; `mutedCount` counts the ones the
+  // reader folded away, so the rail can offer a way back.
+  var mutedCount = 0;
   var lastBooks = [];
   var summary = null;
   var toastTimer;
@@ -102,7 +106,7 @@
     var cls = 'book' + (picked ? ' is-picked' : '');
     var dataId = ' data-id="' + esc(book.id) + '"';
     var cover = '<span class="cover"><span class="pick" aria-hidden="true">✓</span>' +
-      '<img src="' + coverUrl(book) + '" alt="" loading="lazy">' +
+      '<img src="' + coverUrl(book) + '" alt="" loading="lazy" draggable="false">' +
       '<span class="format-tag">' + esc(book.format.toUpperCase()) + '</span>' +
       '<span class="cover-more" role="button" tabindex="0" data-id="' + esc(book.id) +
       '" aria-label="查看《' + esc(book.title) + '》的详情与单独刮削">⋯</span></span>';
@@ -112,13 +116,13 @@
 
     if (state.view === 'list') {
       var mark = book.status === 'finished' ? '读完' : (percent ? percent + '%' : '未读');
-      return '<a class="' + cls + '" href="' + href + '"' + target + dataId + ' aria-label="阅读《' + esc(book.title) + '》">' +
+      return '<a class="' + cls + '" href="' + href + '"' + target + ' draggable="false"' + dataId + ' aria-label="阅读《' + esc(book.title) + '》">' +
         cover + title + author +
         '<span class="list-format">' + esc(book.format.toUpperCase()) + '</span>' +
         '<span class="list-progress">' + mark + '</span>' +
         '</a>';
     }
-    return '<a class="' + cls + '" href="' + href + '"' + target + dataId + ' aria-label="阅读《' + esc(book.title) + '》">' +
+    return '<a class="' + cls + '" href="' + href + '"' + target + ' draggable="false"' + dataId + ' aria-label="阅读《' + esc(book.title) + '》">' +
       cover + title + author + progress + '</a>';
   }
 
@@ -287,33 +291,51 @@
   function renderRail() {
     var t = totals();
     railTotal.textContent = visibleCount + ' 册可见' + (hiddenCount ? ' · ' + hiddenCount + ' 隐藏' : '');
+    // 这里不放「全部」：格式条最前面已经有一个，写两遍是重复。
+    // 从「在读」这类筛选退出时，再点一次当前项就回到全部。
     railStates.innerHTML =
-      railItem('全部（不含隐藏）', visibleCount,
-        !state.status && !state.shelf && state.hidden !== 'only', 'data-nav="all"') +
       railItem('在读', t ? t.reading : '—',
         state.status === 'reading' && state.hidden !== 'only', 'data-nav="reading"') +
       railItem('读完', t ? t.finished : '—',
         state.status === 'finished' && state.hidden !== 'only', 'data-nav="finished"') +
       railItem('隐藏', hiddenCount, state.hidden === 'only', 'data-nav="hidden"', 'is-hidden-item');
 
-    var html = shelves.map(function (s) {
-      return '<button type="button" class="rail-item" aria-pressed="' + (state.shelf === s.id) + '"' +
-        ' data-series="' + esc(s.id) + '">' +
+    // 两组：软件按书名自己归的（可以改名、可以收起）和手动建的。
+    // 自动的排前面，它们通常就是整柜书。
+    var auto = shelves.filter(function (s) { return s.auto; });
+    var manual = shelves.filter(function (s) { return !s.auto; });
+
+    function row(s) {
+      return '<button type="button" class="rail-item' +
+        '" aria-pressed="' + (state.shelf === s.id) + '"' +
+        ' data-series="' + esc(s.id) + '" title="' + esc(s.auto ? '按书名自动归组' : '手动建的丛书') + '">' +
         '<span>' + esc(s.name) + '</span><em>' + s.count + '</em>' +
+        '<span class="rail-edit" data-rename-series="' + esc(s.id) + '" role="button" tabindex="0"' +
+        ' aria-label="给「' + esc(s.name) + '」改名">✎</span>' +
         '<span class="rail-x" data-del-series="' + esc(s.id) + '" role="button" tabindex="0"' +
-        ' aria-label="删除丛书 ' + esc(s.name) + '">×</span>' +
+        ' aria-label="' + (s.auto ? '不再显示「' : '删除「') + esc(s.name) + '」">×</span>' +
         '</button>';
-    }).join('');
-    railSeries.innerHTML = html ||
-      '<p class="rail-empty">还没有丛书。点上方「整理」选中几本，就能归成一组。</p>';
+    }
+
+    var html = auto.map(row).join('') + manual.map(row).join('');
+    railSeries.innerHTML = html || ('<p class="rail-empty">还没有丛书。书名里出现 5 次以上的词会自动归成一套；' +
+      '也可以在「整理」里选中几本手动归组。</p>');
+
+    if (railSeriesReset) {
+      railSeriesReset.hidden = !mutedCount;
+      railSeriesReset.textContent = '↺ 恢复 ' + mutedCount;
+      railSeriesReset.title = '把收起的 ' + mutedCount + ' 个自动丛书放回左侧';
+    }
   }
 
   async function loadShelves() {
     try {
       var data = await api('/api/collections');
       shelves = data.collections || [];
+      mutedCount = (data.muted || []).length;
     } catch (e) {
       shelves = [];
+      mutedCount = 0;
     }
     renderRail();
   }
@@ -340,16 +362,49 @@
     }
   }
 
+  // 自动丛书的组名来自书名里的词，往往带着版本号或半截后缀，所以允许改。
+  // 改名只换显示，归组的规则不动。
+  async function renameSeries(id) {
+    var item = shelves.find(function (s) { return s.id === id; });
+    if (!item) return;
+    var next = window.prompt('把「' + item.name + '」改成什么名字？', item.name);
+    if (next === null) return;
+    next = next.trim();
+    if (!next || next === item.name) return;
+    try {
+      await send('/api/collections/' + encodeURIComponent(id), 'PUT', { name: next });
+      await loadShelves();
+      toast('已改名为「' + next + '」');
+    } catch (e) {
+      toast(e.message);
+    }
+  }
+
+  async function restoreSeries() {
+    var n = mutedCount;
+    try {
+      await api('/api/series/restore', { method: 'POST' });
+      await loadShelves();
+      toast('已放回 ' + n + ' 个自动丛书');
+    } catch (e) {
+      toast(e.message);
+    }
+  }
+
   async function deleteSeries(id) {
     var item = shelves.find(function (s) { return s.id === id; });
     if (!item) return;
-    if (!window.confirm('删除丛书「' + item.name + '」？书本身不会被删，只是不再归在这一组里。')) return;
+    // 自动组删掉下次扫描又会长出来，所以这里记成「不再显示」，可以从组头恢复。
+    var ask = item.auto
+      ? '不再显示自动丛书「' + item.name + '」？\n书不会被删，只是左侧不再列这一组。组头上会留一个恢复入口。'
+      : '删除丛书「' + item.name + '」？书本身不会被删，只是不再归在这一组里。';
+    if (!window.confirm(ask)) return;
     try {
       await api('/api/collections/' + encodeURIComponent(id), { method: 'DELETE' });
       if (state.shelf === id) state.shelf = '';
       await loadShelves();
       await renderBooks();
-      toast('已删除丛书');
+      toast(item.auto ? '已收起这一组' : '已删除丛书');
     } catch (e) {
       toast(e.message);
     }
@@ -360,11 +415,9 @@
     if (!btn) return;
     var nav = btn.getAttribute('data-nav');
     state.shelf = '';
-    if (nav === 'all') {
-      state.status = '';
-      state.hidden = '';
-    } else if (nav === 'reading' || nav === 'finished') {
-      state.status = nav;
+    if (nav === 'reading' || nav === 'finished') {
+      // 再点一次当前项就取消筛选，回到「全部」——左侧没有单独的「全部」了。
+      state.status = state.status === nav ? '' : nav;
       state.hidden = '';
     } else if (nav === 'hidden') {
       state.status = '';
@@ -376,6 +429,13 @@
   });
 
   railSeries.addEventListener('click', function (e) {
+    var rename = e.target.closest ? e.target.closest('[data-rename-series]') : null;
+    if (rename) {
+      e.preventDefault();
+      e.stopPropagation();
+      renameSeries(rename.getAttribute('data-rename-series'));
+      return;
+    }
     var del = e.target.closest ? e.target.closest('[data-del-series]') : null;
     if (del) {
       e.preventDefault();
@@ -395,11 +455,18 @@
   });
   railSeries.addEventListener('keydown', function (e) {
     if (e.key !== 'Enter' && e.key !== ' ') return;
+    var rename = e.target.closest ? e.target.closest('[data-rename-series]') : null;
+    if (rename) {
+      e.preventDefault();
+      renameSeries(rename.getAttribute('data-rename-series'));
+      return;
+    }
     var del = e.target.closest ? e.target.closest('[data-del-series]') : null;
     if (!del) return;
     e.preventDefault();
     deleteSeries(del.getAttribute('data-del-series'));
   });
+  if (railSeriesReset) railSeriesReset.addEventListener('click', restoreSeries);
   document.getElementById('rail-series-new').addEventListener('click', function () { createSeries(); });
 
   /* ---------- reading summary line + statistics ---------- */
@@ -506,6 +573,7 @@
   var sheetShelves = document.getElementById('book-sheet-shelves');
   var sheetNotes = document.getElementById('book-sheet-notes');
   var sheetShelfBtn = document.getElementById('book-sheet-shelf-btn');
+  var sheetHide = document.getElementById('book-sheet-hide');
   var picker = document.getElementById('shelf-picker');
   var pickerList = document.getElementById('shelf-picker-list');
   var pickerInput = document.getElementById('shelf-new-name');
@@ -546,11 +614,16 @@
 
     sheetShelves.innerHTML = (book.collections || []).map(function (id) {
       var item = shelves.find(function (s) { return s.id === id; });
-      return item ? '<span class="chip" aria-pressed="true">' + esc(item.name) + '</span>' : '';
+      if (!item) return '';
+      // 自动丛书只是告诉你这本书归到哪，不能在这里点掉，所以标成淡色。
+      return '<span class="chip' + (item.auto ? ' chip-auto' : '') + '" aria-pressed="true"' +
+        (item.auto ? ' title="按书名自动归组"' : '') + '>' + esc(item.name) + '</span>';
     }).join('');
 
     var counts = book.noteCount || { highlights: 0, bookmarks: 0 };
     sheetNotes.textContent = '笔记与书签' + (counts.highlights + counts.bookmarks ? '（' + (counts.highlights + counts.bookmarks) + '）' : '');
+    // 隐藏是单本也能做的动作，文案跟着当前状态走，点一下就是反向操作。
+    sheetHide.textContent = book.hidden ? '取消隐藏' : '隐藏';
 
     var rows = [
       ['格式', (book.format || '').toUpperCase()],
@@ -578,11 +651,13 @@
 
   function renderShelfPicker() {
     if (!sheetBook) return;
-    if (!shelves.length) {
-      pickerList.innerHTML = '<p class="shelf-picker-empty">还没有书单，在下面新建一个。</p>';
+    // 自动丛书的成员由书名决定，选不了，所以这里只列手动建的。
+    var manual = shelves.filter(function (s) { return !s.auto; });
+    if (!manual.length) {
+      pickerList.innerHTML = '<p class="shelf-picker-empty">还没有手动建的丛书，在下面新建一个。</p>';
       return;
     }
-    pickerList.innerHTML = shelves.map(function (s) {
+    pickerList.innerHTML = manual.map(function (s) {
       var on = (sheetBook.collections || []).indexOf(s.id) >= 0;
       return '<label class="shelf-picker-row">' +
         '<input type="checkbox" data-shelf="' + esc(s.id) + '"' + (on ? ' checked' : '') + '>' +
@@ -720,10 +795,99 @@
     }
   }
 
+  /* ---------- drag a box over the shelf to pick books ---------- */
+  // 桌面端专用：触屏上拖动等于滚动页面，抢过来只会把人搞晕。
+  function marqueeAllowed(e) {
+    if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return false;
+    return !!(window.matchMedia && window.matchMedia('(hover: hover) and (pointer: fine)').matches);
+  }
+
+  var marqueeOrigin = null;
+  var marqueeBox = null;
+  var marqueeLive = false;
+  var suppressClickUntil = 0;
+
+  function marqueeBounds(a, b) {
+    return {
+      left: Math.min(a.x, b.x),
+      top: Math.min(a.y, b.y),
+      right: Math.max(a.x, b.x),
+      bottom: Math.max(a.y, b.y)
+    };
+  }
+
+  // 只加不减：划过就选中。想反悔再点一下那张卡片就是取消。
+  function marqueePick(bounds) {
+    var grew = false;
+    Array.prototype.forEach.call(shelf.querySelectorAll('.book'), function (node) {
+      var r = node.getBoundingClientRect();
+      if (!(r.left < bounds.right && r.right > bounds.left &&
+            r.top < bounds.bottom && r.bottom > bounds.top)) return;
+      var id = node.getAttribute('data-id');
+      if (state.selected.has(id)) return;
+      state.selected.add(id);
+      node.classList.add('is-picked');
+      grew = true;
+    });
+    if (grew) syncBatch();
+  }
+
+  shelf.addEventListener('mousedown', function (e) {
+    if (!marqueeAllowed(e)) return;
+    marqueeOrigin = { x: e.clientX, y: e.clientY };
+    marqueeLive = false;
+  });
+
+  document.addEventListener('mousemove', function (e) {
+    if (!marqueeOrigin) return;
+    var bounds = marqueeBounds(marqueeOrigin, { x: e.clientX, y: e.clientY });
+    if (!marqueeLive) {
+      // 手抖一两个像素不算框选，让它继续当作点击。
+      if (bounds.right - bounds.left < 6 && bounds.bottom - bounds.top < 6) return;
+      marqueeLive = true;
+      if (!state.selecting) {
+        setSelecting(true);
+        toast('框选已开启：松手就选好，再点「隐藏」');
+      }
+      document.body.classList.add('is-marquee');
+      marqueeBox = document.createElement('div');
+      marqueeBox.className = 'marquee';
+      document.body.appendChild(marqueeBox);
+    }
+    marqueeBox.style.left = bounds.left + 'px';
+    marqueeBox.style.top = bounds.top + 'px';
+    marqueeBox.style.width = (bounds.right - bounds.left) + 'px';
+    marqueeBox.style.height = (bounds.bottom - bounds.top) + 'px';
+    marqueePick(bounds);
+    e.preventDefault();
+  });
+
+  function endMarquee() {
+    if (!marqueeOrigin) return;
+    var live = marqueeLive;
+    marqueeOrigin = null;
+    marqueeLive = false;
+    if (marqueeBox) {
+      marqueeBox.remove();
+      marqueeBox = null;
+    }
+    document.body.classList.remove('is-marquee');
+    // 松手后浏览器还会补一个 click：落回卡片上会开阅读器或把刚选中的取消掉。
+    if (live) suppressClickUntil = Date.now() + 350;
+  }
+
+  document.addEventListener('mouseup', endMarquee);
+  window.addEventListener('blur', endMarquee);
+
   // The corner button lives inside the card link, so the click has to be
   // intercepted before it turns into a page navigation. In tidy-up mode the
   // whole card becomes a checkbox and nothing navigates.
   shelf.addEventListener('click', function (e) {
+    if (Date.now() < suppressClickUntil) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     if (state.selecting) {
       var link = e.target.closest ? e.target.closest('.book') : null;
       if (!link) return;
@@ -759,6 +923,26 @@
   sheetRescan.addEventListener('click', rescanOne);
   sheetOpen.addEventListener('click', function () {
     if (sheetBook) window.open('/reader?id=' + encodeURIComponent(sheetBook.id), '_blank', 'noopener');
+  });
+  // 单本隐藏：不用先进「整理」，从详情面板点一下就收起来。
+  sheetHide.addEventListener('click', async function () {
+    if (!sheetBook) return;
+    var book = sheetBook;
+    var want = !book.hidden;
+    var name = book.title || '未命名';
+    sheetHide.disabled = true;
+    try {
+      await send('/api/books/hide', 'POST', { ids: [book.id], hidden: want });
+      toast(want ? '已隐藏《' + name + '》，左侧「隐藏」里能找到' : '已取消隐藏《' + name + '》');
+      closeSheet();
+      await renderStats();
+      await renderBooks();
+      await renderContinue();
+    } catch (e) {
+      toast(e.message);
+    } finally {
+      sheetHide.disabled = false;
+    }
   });
   document.addEventListener('keydown', function (e) {
     if (e.key !== 'Escape') return;
@@ -803,6 +987,7 @@
       seriesPicker.hidden = true;
     }
     shelf.classList.toggle('is-selecting', on);
+    document.body.classList.toggle('is-tidying', on);
     repaintShelf();
     syncBatch();
   }
@@ -828,11 +1013,13 @@
   }
 
   function renderSeriesPicker() {
-    if (!shelves.length) {
-      seriesPickerList.innerHTML = '<p class="shelf-picker-empty">还没有丛书，在下面新建一个。</p>';
+    // 只能往手动丛书里加：自动组的成员是书名算出来的，加不进去。
+    var manual = shelves.filter(function (s) { return !s.auto; });
+    if (!manual.length) {
+      seriesPickerList.innerHTML = '<p class="shelf-picker-empty">还没有手动建的丛书，在下面新建一个。</p>';
       return;
     }
-    seriesPickerList.innerHTML = shelves.map(function (s) {
+    seriesPickerList.innerHTML = manual.map(function (s) {
       return '<button type="button" class="shelf-picker-row" data-put="' + esc(s.id) + '">' +
         '<span>' + esc(s.name) + '</span><em>' + s.count + ' 本</em></button>';
     }).join('');
