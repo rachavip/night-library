@@ -128,8 +128,18 @@
     var doc = await task.promise;
     var stage = document.createElement('div');
     stage.className = 'pdf-stage';
+    var pageWrap = document.createElement('div');
+    pageWrap.className = 'pdf-page';
     var canvas = document.createElement('canvas');
-    stage.appendChild(canvas);
+    pageWrap.appendChild(canvas);
+    // pdf.js paints pages as pixels, so a PDF has no selectable text by
+    // itself. This invisible layer of spans sits exactly on top of the canvas
+    // and is what lets the cursor drag over words, copy them, or hand them to
+    // a highlight.
+    var textLayerDiv = document.createElement('div');
+    textLayerDiv.className = 'pdf-text-layer';
+    pageWrap.appendChild(textLayerDiv);
+    stage.appendChild(pageWrap);
     viewer.replaceChildren(stage);
 
     var current = 0;
@@ -221,6 +231,47 @@
       }
     }
 
+    /* The canvas is sized in CSS pixels (the backing store is multiplied by
+     * the device ratio, the element is not), so the text layer lines up by
+     * using the same viewport. offsetX/offsetY are non-zero only in "匹配可见"
+     * mode, where the visible canvas shows a cropped part of the page and the
+     * text has to be pushed back by the same amount. */
+    function layoutPage(width, height, offsetX, offsetY) {
+      pageWrap.style.width = Math.max(1, Math.floor(width)) + 'px';
+      pageWrap.style.height = Math.max(1, Math.floor(height)) + 'px';
+      textLayerDiv.style.left = (-offsetX) + 'px';
+      textLayerDiv.style.top = (-offsetY) + 'px';
+    }
+
+    async function paintText(page, vp, offsetX, offsetY, token) {
+      textLayerDiv.replaceChildren();
+      textLayerDiv.style.width = Math.max(1, Math.floor(vp.width)) + 'px';
+      textLayerDiv.style.height = Math.max(1, Math.floor(vp.height)) + 'px';
+      // pdf.js multiplies every span by this variable, so it has to sit on the
+      // container itself rather than on a parent.
+      textLayerDiv.style.setProperty('--scale-factor', String(vp.scale));
+      var content;
+      try {
+        content = await page.getTextContent();
+      } catch (e) {
+        return;
+      }
+      if (token !== gotoToken) return;
+      // A scanned page carries no text at all. Remembering that lets the reader
+      // explain why nothing gets selected instead of looking broken.
+      stage.dataset.hasText = content && content.items.length ? 'true' : 'false';
+      if (!content || !content.items.length) return;
+      try {
+        var textTask = pdfjsLib.renderTextLayer({
+          textContentSource: content,
+          container: textLayerDiv,
+          viewport: vp,
+          textDivs: []
+        });
+        if (textTask && textTask.promise) await textTask.promise;
+      } catch (e) { /* a missing text layer must never take the page down */ }
+    }
+
     engine = {
       type: 'pdf',
       percent: function () { return doc.numPages > 1 ? (current - 1) / (doc.numPages - 1) : 1; },
@@ -278,19 +329,23 @@
             canvas.height = ph;
             canvas.style.width = Math.floor(sw) + 'px';
             canvas.style.height = Math.floor(sh) + 'px';
+            layoutPage(sw, sh, sx, sy);
             ctx = canvas.getContext('2d');
             ctx.fillStyle = '#ffffff';
             ctx.fillRect(0, 0, pw, ph);
             ctx.drawImage(off, px, py, pw, ph, 0, 0, pw, ph);
+            await paintText(page, vp, sx, sy, token);
           } else {
             canvas.width = Math.max(1, Math.floor(vp.width * dpr));
             canvas.height = Math.max(1, Math.floor(vp.height * dpr));
             canvas.style.width = Math.floor(vp.width) + 'px';
             canvas.style.height = Math.floor(vp.height) + 'px';
+            layoutPage(vp.width, vp.height, 0, 0);
             ctx = canvas.getContext('2d');
             ctx.fillStyle = '#ffffff';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
             await renderPage(page, ctx, vp, dpr);
+            await paintText(page, vp, 0, 0, token);
           }
         } catch (e) {
           // Cancelled by a newer page turn - the newer call owns the canvas now.
@@ -721,6 +776,39 @@
     return noteState.highlights.length + noteState.bookmarks.length;
   }
 
+  /* The shelf is usually opened over plain http on a LAN address, and that is
+   * not a secure context, so navigator.clipboard is frequently undefined.
+   * A temporary textarea plus execCommand still works there and needs no
+   * permission prompt. */
+  async function copyText(text) {
+    text = String(text || '');
+    if (!text) return false;
+    if (window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch (e) { /* fall through to the textarea path */ }
+    }
+    try {
+      var area = document.createElement('textarea');
+      area.value = text;
+      area.setAttribute('readonly', '');
+      area.style.position = 'fixed';
+      area.style.top = '-1000px';
+      area.style.left = '0';
+      area.style.opacity = '0';
+      document.body.appendChild(area);
+      area.focus();
+      area.select();
+      area.setSelectionRange(0, text.length);
+      var ok = document.execCommand('copy');
+      document.body.removeChild(area);
+      return ok;
+    } catch (e) {
+      return false;
+    }
+  }
+
   function updateNoteCounts() {
     document.getElementById('notes-hl-count').textContent = noteState.highlights.length;
     document.getElementById('notes-bm-count').textContent = noteState.bookmarks.length;
@@ -806,6 +894,14 @@
   function hideSelBar() { selBar.hidden = true; }
 
   function showSelBar(x, y) {
+    // A PDF page is pixels: there is nothing to paint a highlight onto, and a
+    // note anchored to a cropped canvas would drift on the next zoom. Copy is
+    // the only honest action there, so the other two step aside.
+    var isPdf = engine && engine.type === 'pdf';
+    var hlBtn = selBar.querySelector('button[data-act="highlight"]');
+    var noteBtn = selBar.querySelector('button[data-act="note"]');
+    if (hlBtn) hlBtn.hidden = isPdf;
+    if (noteBtn) noteBtn.hidden = isPdf;
     selBar.hidden = false;
     var width = selBar.offsetWidth || 150;
     var left = clamp(x, width / 2 + 10, window.innerWidth - width / 2 - 10);
@@ -855,9 +951,11 @@
     showSelBar(box.left + rect.left + rect.width / 2, box.top + rect.top);
   }
 
-  // TXT is plain DOM, so it has no CFI; the page index is the anchor instead.
+  // TXT and PDF are plain DOM, so they have no CFI; the page index is the
+  // anchor instead. In a PDF the text comes from the invisible text layer, so
+  // dragging over a page behaves like dragging over any other element.
   viewer.addEventListener('mouseup', function () {
-    if (!engine || engine.type !== 'txt') return;
+    if (!engine || (engine.type !== 'txt' && engine.type !== 'pdf')) return;
     setTimeout(function () {
       var selection = window.getSelection();
       if (!selection || selection.rangeCount === 0) return;
@@ -1017,6 +1115,13 @@
     var act = btn.getAttribute('data-act');
     if (act === 'cancel') {
       clearSelection();
+      return;
+    }
+    if (act === 'copy') {
+      var picked = pendingSelection ? pendingSelection.text : '';
+      var copied = await copyText(picked);
+      hideSelBar();
+      toast(copied ? '已复制 ' + picked.length + ' 字' : '复制失败，选中后按 Ctrl+C 试试');
       return;
     }
     if (act === 'highlight') {

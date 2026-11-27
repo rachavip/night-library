@@ -71,6 +71,10 @@ button { cursor: pointer; }
 }
 .controls button:hover { color: var(--accent); border-color: var(--accent); }
 .font-group { display: flex; align-items: center; gap: 2px; }
+/* `display: flex` above beats the browser's own `[hidden] { display: none }`,
+   so setting `.hidden = true` on this group did nothing and the − 18 + control
+   stayed visible in the PDF reader, where it cannot do anything. */
+.font-group[hidden] { display: none; }
 .font-group button { min-width: 28px; padding: 6px 7px; }
 .font-group span { min-width: 26px; text-align: center; font-family: var(--mono); font-size: 11px; color: var(--muted); }
 
@@ -112,6 +116,36 @@ button { cursor: pointer; }
   display: block;
 }
 .viewer .pdf-stage canvas { display: block; margin: 0 auto; }
+/* Canvas and text layer sit in one wrapper so the text stays glued to the
+   page no matter how the page is centred or cropped. */
+.viewer .pdf-page { position: relative; margin: 0 auto; overflow: hidden; }
+.viewer .pdf-page canvas { display: block; margin: 0; }
+/* pdf.js paints invisible spans on top of the canvas; they are what makes the
+   text selectable and therefore copyable. `--scale-factor` is set inline from
+   reader.js because pdf.js multiplies every span by it. */
+.pdf-text-layer {
+  position: absolute;
+  overflow: hidden;
+  opacity: 0.25;
+  line-height: 1;
+  text-align: initial;
+  transform-origin: 0 0;
+  forced-color-adjust: none;
+  -webkit-text-size-adjust: none;
+  text-size-adjust: none;
+  z-index: 1;
+}
+.pdf-text-layer span,
+.pdf-text-layer br {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+}
+.pdf-text-layer span.markedContent { top: 0; height: 0; }
+.pdf-text-layer ::selection { background: rgba(233, 162, 59, 0.32); }
+.pdf-text-layer br::selection { background: transparent; }
 .viewer canvas { box-shadow: 0 10px 34px rgba(0, 0, 0, 0.22); background: #fff; }
 
 .reader-foot {
@@ -326,6 +360,9 @@ button { cursor: pointer; }
   transform: translate(-50%, -100%);
 }
 .sel-bar[hidden] { display: none; }
+/* A PDF has no reflowable text, so 高亮 / 写笔记 are hidden there and a very
+   wide "写笔记" would otherwise leave the bar lopsided. */
+.sel-bar button[hidden] { display: none; }
 .sel-bar button {
   padding: 5px 11px;
   color: var(--fg);
