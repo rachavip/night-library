@@ -327,11 +327,13 @@
 
   function playerControl(action) {
     if (mode !== 'embed') return;
-    // The iframe is loaded once on the first open, then kept alive. Later
-    // transport clicks only drive the player - the panel stays closed so the
-    // shelf keeps playing while you browse books.
-    var firstLoad = !frame.getAttribute('src');
-    if (firstLoad) openPanel();
+    // The iframe is preloaded silently at startup, so a transport click never
+    // needs to open the panel. Only the login prompt will show it if needed.
+    var needsLoad = !frame.getAttribute('src');
+    if (needsLoad) {
+      var url = normalizeUrl((activeService() && activeService().url) || musicUrl);
+      if (url) frame.setAttribute('src', proxiedUrl(url));
+    }
     setTimeout(function () {
       var ok = false;
       if (action === 'play') {
@@ -361,13 +363,16 @@
         var needsLogin = doc && (doc.querySelector('input[type="password"]') ||
           /登录|login|password/i.test((doc.body ? doc.body.innerText : '').slice(0, 300)));
         if (needsLogin) {
+          // The player is hidden behind the panel; show it so the login box is
+          // actually reachable, then explain what to do.
+          if (!open) openPanel();
           toastFn('请先在音乐面板里登录 AnyListen，再选一首歌收藏或播放，之后顶栏按钮就能直接控制了');
         }
         try { frame.focus(); } catch (e) { /* ignore */ }
       } else {
         watchPlayerState();
       }
-    }, firstLoad ? 1400 : 120);
+    }, needsLoad ? 1600 : 120);
   }
 
   function focusPlayer() {
@@ -381,7 +386,11 @@
     panel.setAttribute('aria-hidden', 'false');
     toggle.setAttribute('aria-pressed', 'true');
     open = true;
-    if (state === 'idle' || state === 'error' || state === 'timeout') loadCurrent();
+    // The iframe is already preloaded at startup; reloading it here would
+    // reset the player and lose the login state.
+    if ((state === 'idle' || state === 'error' || state === 'timeout') && !frame.getAttribute('src')) {
+      loadCurrent();
+    }
     setTimeout(watchPlayerState, 1200);
   }
 
@@ -489,6 +498,10 @@
 
       if (mode === 'embed') {
         hideSubsonic();
+        // Preload the player in the background so the first click on the
+        // transport bar plays music instead of opening a loading panel.
+        var startUrl = normalizeUrl(musicUrl);
+        if (startUrl && !open) frame.setAttribute('src', proxiedUrl(startUrl));
         // A settings save may have changed the address - reload on next open.
         if (open) loadCurrent();
       } else {
