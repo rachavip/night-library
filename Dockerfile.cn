@@ -54,7 +54,15 @@ COPY . .
 # （32MB 只用了两个文件）和 epubjs（6.6MB 只用了一个）就没用了，删掉省体积。
 # jszip 保留：server/convert.js 用它把 MOBI7 的散装目录重新压成 EPUB。
 # vendor/kindleunpack 以单个 zip 分发（仓库里更新只需拖一个文件），这里解压后删除。
-RUN node scripts/prepare-vendor.js \
+#
+# obfuscate 把 server/ 与 public/js/ 就地换成混淆版本，让镜像里的代码难以阅读。
+# 混淆器只在构建期使用：安装、混淆、prune 在同一个 RUN 内完成，
+# 不会残留在镜像层里（仓库里保存的始终是可读源码）。
+RUN npm install --no-save --no-package-lock --registry=https://registry.npmmirror.com \
+      --ignore-scripts --no-audit --no-fund javascript-obfuscator@5 \
+ && node scripts/prepare-vendor.js \
+ && node scripts/obfuscate.js \
+ && npm prune --omit=dev --ignore-scripts --no-audit --no-fund \
  && rm -rf node_modules/pdfjs-dist node_modules/epubjs \
  && if [ -f vendor/kindleunpack.zip ]; then \
       python3 -c "import zipfile; zipfile.ZipFile('vendor/kindleunpack.zip').extractall('vendor/kindleunpack')" \
