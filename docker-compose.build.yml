@@ -1,15 +1,15 @@
-name: ebooks-build
+# 本地构建版（不经过 GitHub）。用法：
+#   docker compose -f docker-compose.build.yml up -d --build
+# name 是变体专用项目名，避免和主 compose 混成一个项目，详见 README。
+name: night-library-build
 
-# 本地构建版：不经过 GitHub，直接在放着源码的机器上构建镜像。
-# 用法：docker compose -f docker-compose.build.yml up -d --build
 services:
-  ebooks:
+  night-library:
     build: .
     image: night-library:local
-    container_name: ebooks
+    container_name: night-library
     restart: unless-stopped
     ports:
-      # 与镜像版保持一致，访问地址同样是 http://NAS地址:8421
       - "8421:8080"
     volumes:
       - /vol1:/vol1:ro
@@ -19,6 +19,3 @@ services:
       BOOKS_DIR: /vol1/1000/EBook
       DATA_DIR: /app/data
       PORT: "8080"
-      # 自动刮削：建议保持注释，去网页 ⚙ → 自动刮削 里改，保存后立即生效
-      # SCAN_ON_START: 1              # 0 = 关闭启动刮削（首次无索引仍会刮）
-      # SCAN_INTERVAL_MINUTES: 60     # 分钟；0 = 关闭定时

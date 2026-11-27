@@ -208,7 +208,7 @@
           <button type="button" class="mode-card" data-mode="embed" role="radio" aria-checked="true"><strong>网页嵌入</strong><span>AnyListen 等，打开即用自带播放器</span></button>
           <button type="button" class="mode-card" data-mode="subsonic" role="radio" aria-checked="false"><strong>随机播放</strong><span>Navidrome 等，底部轻量播放条</span></button>
         </div>
-        <p class="hint" id="music-hint">给服务填地址，点顶栏 ♫ 打开播放器；在播放器左上角切换服务。</p>
+        <p class="hint" id="music-hint">顶栏 ⏮ ▶ ⏭ 直接控制音乐。前提：先登录 AnyListen 一次，并在里面备好几首能播的收藏、循环选随机或列表循环（别选播完就停）。</p>
         <p class="hint env-hint" id="music-env-hint" hidden>当前地址由 docker-compose.yml 的 MUSIC_URL 指定，优先级高于此处。要改地址请改 compose 后执行 docker compose up -d。</p>
         <div class="music-services" id="music-services"></div>
         <div id="music-subsonic-fields" hidden>

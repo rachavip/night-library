@@ -6,6 +6,14 @@
 
 镜像里**只有程序**。你的书籍、设置、封面、阅读进度都在 NAS 挂载的 `./data` 和 `/vol1` 里，不进镜像，也不进 GitHub。公开仓库的 Actions 和 GHCR 公开包对个人使用是免费的。
 
+> **本文档里的路径、IP、端口都是示例，照着换成自己的即可：**
+> - 电子书目录，假设是 `/vol1/1000/EBook`（你放书的文件夹）
+> - 夜读项目目录，假设是 `/vol1/1000/docker/night-library`（`docker-compose.yml` 所在的那一层，目录名可以自取，比如 `ebooks`）
+> - AnyListen 地址，假设是 `http://192.168.0.111:9500`（换成你自己的 NAS IP 与端口）
+> - 宿主机端口 `8421`（撞端口就换个数字）
+>
+> 程序里没有写死这些值，目录名、端口不同都不影响使用。
+
 ---
 
 ## 第一步：创建 GitHub 仓库
@@ -165,8 +173,8 @@ GHCR 要求用户名小写，`rachavip` 已是小写，可直接使用。
 
 1. SSH 登录 NAS，进入准备放项目的目录（若不存在先创建）：
    ```bash
-   mkdir -p /vol1/1000/docker/ebooks
-   cd /vol1/1000/docker/ebooks
+   mkdir -p /vol1/1000/docker/night-library
+   cd /vol1/1000/docker/night-library
    ```
 
 2. 把项目里的 **`docker-compose.yml` 这一个文件**上传到这里（源码、node_modules 都不用传）
@@ -174,15 +182,15 @@ GHCR 要求用户名小写，`rachavip` 已是小写，可直接使用。
    ```yaml
    image: ghcr.io/rachavip/night-library:latest
    ```
-   > **注意区分两个目录**：compose 文件放在项目目录 `/vol1/1000/docker/ebooks`；你的电子书放在书籍目录 `/vol1/1000/EBook`（`BOOKS_DIR` 已指向它）。**不要把书放进项目目录**。因为挂载了整个 `/vol1`，网页里也能再添加 `/vol1` 下的其他书籍文件夹。
+   > **注意区分两个目录**：compose 文件放在项目目录 `/vol1/1000/docker/night-library`（示例）；你的电子书放在书籍目录 `/vol1/1000/EBook`（示例，`BOOKS_DIR` 指向它）。**不要把书放进项目目录**。因为挂载了整个 `/vol1`，网页里也能再添加 `/vol1` 下的其他目录。
 4. 拉取并启动：
    ```bash
    docker compose pull
    docker compose up -d
    ```
-5. 浏览器打开 `http://你的NAS地址:8080`
+5. 浏览器打开 `http://你的NAS地址:8421`（宿主机 8421 映射到容器 8080；改过端口就换成你改的那个）
 
-飞牛图形界面也可以：Docker → 项目 → 创建项目 → 路径选 `/vol1/1000/docker/ebooks` → compose 文件选 `docker-compose.yml` → 启动，效果一样。
+飞牛图形界面也可以：Docker → 项目 → 创建项目 → 路径选 `/vol1/1000/docker/night-library` → compose 文件选 `docker-compose.yml` → 启动，效果一样。
 
 ---
 
@@ -192,7 +200,7 @@ GHCR 要求用户名小写，`rachavip` 已是小写，可直接使用。
 2. Actions 自动构建并推送新镜像（几分钟）
 3. NAS 上执行：
    ```bash
-   cd /vol1/1000/docker/ebooks
+   cd /vol1/1000/docker/night-library
    docker compose pull
    docker compose up -d
    ```

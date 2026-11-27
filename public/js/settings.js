@@ -50,7 +50,7 @@
     });
     el('music-subsonic-fields').hidden = mode !== 'subsonic';
     el('music-hint').textContent = mode === 'embed'
-      ? '给服务填地址，点顶栏 ♫ 打开播放器；在播放器左上角切换服务，收起后继续播放。'
+      ? '顶栏 ⏮ ▶ ⏭ 直接控制音乐，不用打开面板。前提：先在面板里登录 AnyListen 一次，并在 AnyListen 里备好几首能播的收藏、循环方式选随机或列表循环（别选播完就停）。'
       : '填写 Navidrome 等 Subsonic 服务的地址与账号，书架底部会出现轻量播放条。';
     el('music-test-result').textContent = '';
   }

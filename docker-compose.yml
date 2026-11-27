@@ -1,36 +1,26 @@
-name: ebooks
-
+# 路径、IP、端口都是示例，按自己的 NAS 换成实际值；逐项说明见 README「compose 文件说明」。
 services:
-  ebooks:
-    # 镜像由 GitHub Actions 推送到 ghcr.io，这里走南京大学镜像站前缀，国内拉取很快。
-    # 镜像内容完全相同（同一个仓库、同一个 latest 标签），只是下载走国内通道。
-    # 如果哪天南大源失效，可换成 ghcr.1ms.run/rachavip/night-library:latest
+  night-library:
     image: ghcr.nju.edu.cn/rachavip/night-library:latest
-    # 如果想在本地构建（不经过 GitHub），改用 docker-compose.build.yml。
-    container_name: ebooks
+    container_name: night-library
     restart: unless-stopped
     ports:
-      # 宿主机端口 8421 → 容器 8080；访问地址为 http://NAS地址:8421
+      # 宿主机 8421 → 容器 8080
       - "8421:8080"
     volumes:
-      # 把飞牛 NAS 的 vol1 整个挂进去，且路径保持一致。
-      # 这样在网页设置里填 /vol1/1000/任意文件夹 都能被刮削到（只读，不动原书）。
+      # 整个 vol1 只读挂入，路径保持一致
       - /vol1:/vol1:ro
-      # 索引 / 封面 / 转换缓存 / 阅读进度，跟随本 compose 文件所在目录
+      # 索引 / 封面 / 缓存 / 进度
       - ./data:/app/data
     environment:
       TZ: Asia/Shanghai
-      # 默认电子书文件夹；可在网页「设置 - 电子书文件夹」里增删
+      # 默认书籍目录（示例，改成自己的）
       BOOKS_DIR: /vol1/1000/EBook
       DATA_DIR: /app/data
       PORT: "8080"
-      # ===== 自动刮削（建议保持注释，去网页 ⚙ → 自动刮削 里改）=====
-      # 网页里可设置"启动时刮一次"和间隔分钟数，保存后立即生效。
-      # 只有想在 compose 里强制固定调度时才取消注释，优先级高于网页设置。
-      # SCAN_ON_START: 1              # 0 = 关闭启动刮削（首次无索引仍会刮）
-      # SCAN_INTERVAL_MINUTES: 60     # 分钟；0 = 关闭定时
-      # ===== 以下都是可选配置，用到才取消注释 =====
-      # 音乐地址：程序里已预填好，自己用不用填。
-      # 如果别人拿去用、不知道在网页哪里改地址，可以在这里指定，优先级高于网页保存值。
-      # MUSIC_URL: http://192.168.1.20:9500
-      # MUSIC_MODE: embed   # embed = 网页嵌入（AnyListen 等）；subsonic = 随机播放条（Navidrome 等）
+      # 可选：自动刮削（不写就用网页里的设置）
+      # SCAN_ON_START: 1
+      # SCAN_INTERVAL_MINUTES: 60
+      # 可选：音乐服务地址（不写就用网页里保存的地址）
+      # MUSIC_URL: http://192.168.0.111:9500
+      # MUSIC_MODE: embed

@@ -265,7 +265,7 @@ function guessFromFilename(base, dirName) {
   }
 
   // 《书名》01 — the brackets wrap the title itself and the trailing digits are
-  // the volume, e.g. 【全唐诗】30册/《全唐诗》01.PDF.
+  // the volume, e.g. 【某套书】30册/《某套书》01.PDF.
   let m = s.match(/^[《〈]([^》〉]{1,60})[》〉]\s*([^《》]{0,12})\s*$/);
   if (m) {
     const vol = m[2].trim();
@@ -643,7 +643,7 @@ async function storeCover(src, coverDir, id) {
   }
 }
 
-/* A picture next to the book, named after it: 「全唐诗 01.jpg」. */
+/* A picture next to the book, named after it: 「某套书 01.jpg」. */
 async function siblingCover(file, coverDir, id) {
   if (!coverDir) return '';
   const dir = path.dirname(file);
@@ -666,7 +666,7 @@ const FOLDER_COVER_NAMES = [
 ];
 
 /* One picture for a whole folder. A 30-volume set rarely ships 30 separate
- * covers; dropping a single cover.jpg into 【全唐诗】30册/ dresses all of them. */
+ * covers; dropping a single cover.jpg into 【某套书】30册/ dresses all of them. */
 async function findDirCover(dir) {
   for (const name of FOLDER_COVER_NAMES) {
     try {
@@ -1116,7 +1116,7 @@ async function saveProgress(cfg, all) {
 }
 
 /* Sorting needs one canonical form for both sides of a comparison, otherwise
- * 「全唐诗 01」and「全唐诗01」land in different places and volumes of one set
+ * 「某套书 01」and「某套书01」land in different places and volumes of one set
  * get interleaved with unrelated books. */
 function sortKeyTitle(value) {
   return String(value || '')
