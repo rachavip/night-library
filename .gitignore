@@ -5,3 +5,6 @@ data/
 .DS_Store
 Thumbs.db
 test-folders/
+
+# 未被引用的本地素材，不进仓库
+logo.png

@@ -1,16 +1,20 @@
 FROM node:20-bookworm-slim
 
-# Calibre supplies ebook-meta so MOBI and AZW3 can be converted to EPUB for
-# in-browser reading. poppler-utils supplies pdftoppm, which renders page one of
-# a scanned PDF as its cover - those files carry no embedded cover at all.
-# Everything else is read natively.
+# Two small CLI tools instead of one enormous one:
+#   python3         runs the vendored KindleUnpack (MOBI / AZW3 -> EPUB)
+#   poppler-utils   supplies pdftoppm, which renders page one of a scanned PDF
+#                   as its cover - those files carry no embedded cover at all
+#
+# Calibre used to provide both the conversion and the metadata scraping, and
+# pulled in Qt6 + WebEngine: ~700MB of the image for 52 Kindle books. The
+# metadata reading is now plain JS (server/mobi.js, server/library.js) and the
+# conversion is KindleUnpack under vendor/, so the whole layer is ~30MB.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      calibre \
+      python3 \
       poppler-utils \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* /usr/share/doc/* /usr/share/man/*
 
-ENV QT_QPA_PLATFORM=offscreen \
-    TZ=Asia/Shanghai \
+ENV TZ=Asia/Shanghai \
     BOOKS_DIR=/books \
     DATA_DIR=/app/data \
     PORT=8080
@@ -28,7 +32,21 @@ COPY package.json package-lock.json* ./
 RUN npm install --ignore-scripts --omit=dev --omit=optional --no-audit --no-fund
 
 COPY . .
-RUN node scripts/prepare-vendor.js
+
+# `prepare-vendor` copies the browser bundles out of node_modules, so the npm
+# packages themselves are dead weight afterwards: pdfjs-dist is 32MB for two
+# files, epubjs 6.6MB for one. Dropping them costs nothing at runtime - the
+# server never requires them.
+#
+# vendor/kindleunpack ships as one zip so the repo can be updated by dragging
+# a single file into GitHub; it is unpacked (and removed) here. jszip is kept
+# because server/convert.js zips loose MOBI7 trees back into EPUBs.
+RUN node scripts/prepare-vendor.js \
+ && rm -rf node_modules/pdfjs-dist node_modules/epubjs \
+ && if [ -f vendor/kindleunpack.zip ]; then \
+      python3 -c "import zipfile; zipfile.ZipFile('vendor/kindleunpack.zip').extractall('vendor/kindleunpack')" \
+      && rm -f vendor/kindleunpack.zip; \
+    fi
 
 VOLUME ["/books", "/app/data"]
 EXPOSE 8080

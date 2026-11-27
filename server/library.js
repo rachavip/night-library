@@ -10,6 +10,7 @@ const crypto = require('crypto');
 const yauzl = require('yauzl');
 const iconv = require('iconv-lite');
 const { execFile } = require('child_process');
+const mobiMeta = require('./mobi');
 
 const SUPPORTED = new Set(['pdf', 'epub', 'mobi', 'azw3', 'txt']);
 
@@ -563,8 +564,8 @@ function longestPdfTitle(s) {
   return best;
 }
 
-/* Detect a real image from its magic bytes - ebook-meta writes the source
- * format regardless of the filename extension we give it. */
+/* Detect a real image from its magic bytes - a cover exported from a book
+ * keeps the source format regardless of the filename we give it. */
 function imageExt(buf) {
   if (!buf || buf.length < 12) return '';
   if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'jpg';
@@ -574,40 +575,50 @@ function imageExt(buf) {
   return '';
 }
 
-/* One ebook-meta call reads metadata AND exports the cover, so adding covers
- * does not double the number of processes spawned per book. */
-function scrapeWithCalibre(file, coverDir, id) {
-  return new Promise(resolve => {
-    if (!coverDir || (process.platform === 'win32' && !process.env.CALIBRE_PATH)) {
-      return resolve({ coverFile: '' });
-    }
-    const tmp = path.join(coverDir, id + '.calibre.jpg');
-    execFile('ebook-meta', [file, '--get-cover=' + tmp], { timeout: 20000, maxBuffer: 1024 * 1024 }, async (err, stdout) => {
-      const meta = { coverFile: '' };
-      if (stdout) {
-        const get = label => {
-          const m = stdout.match(new RegExp('^' + label + '\\s*:\\s*(.+)$', 'im'));
-          return m ? clean(m[1]) : '';
-        };
-        meta.title = get('Title');
-        meta.author = get('Author(s)') || get('Author');
-        meta.language = get('Language');
-      }
-      // ebook-meta can exit non-zero yet still have written the cover, so
-      // check the file regardless of err.
-      try {
-        const buf = await fsp.readFile(tmp);
-        const ext = imageExt(buf);
-        if (ext) {
-          const out = path.join(coverDir, id + '.' + ext);
-          await fsp.writeFile(out, buf);
-          meta.coverFile = path.basename(out);
-        }
-      } catch (e) { /* this book has no embedded cover */ }
-      try { await fsp.unlink(tmp); } catch (e) { /* ignore */ }
-      resolve(meta);
-    });
+/* MOBI / AZW3 metadata, read straight out of the Palm database header. This
+ * replaces Calibre's `ebook-meta`, which meant installing ~700MB of Qt to
+ * scrape 52 books - see server/mobi.js for the header layout. */
+async function scrapeMobi(file, coverDir, id) {
+  const m = await mobiMeta.readMeta(file);
+  const meta = {};
+  if (m.title) meta.title = m.title;
+  if (m.author) meta.author = m.author;
+  if (m.language) meta.language = m.language;
+  if (m.cover && m.coverExt && coverDir) {
+    try {
+      const out = path.join(coverDir, id + '.' + m.coverExt);
+      await fsp.writeFile(out, m.cover);
+      meta.coverFile = path.basename(out);
+    } catch (e) { /* no writable cover store: the shelf falls back to a text card */ }
+  }
+  return meta;
+}
+
+/* An EPUB whose OPF never declared a cover still usually ships the artwork as
+ * images/cover.jpg. Look for a file that calls itself a cover before settling
+ * on the first real picture - tiny spacer gifs are skipped by the size floor. */
+async function epubAnyCover(file, coverDir, id) {
+  if (!coverDir) return '';
+  const entries = await readZipEntries(file, e => /\.(jpe?g|png|gif|webp)$/i.test(e.fileName));
+  const names = [...entries.keys()].sort((a, b) => {
+    const ca = /cover/i.test(a) ? 0 : 1;
+    const cb = /cover/i.test(b) ? 0 : 1;
+    if (ca !== cb) return ca - cb;
+    return a.length - b.length;
   });
+  for (const name of names.slice(0, 4)) {
+    const buf = entries.get(name);
+    const ext = imageExt(buf);
+    if (!ext || buf.length < 3000) continue;
+    try {
+      const out = path.join(coverDir, id + '.' + ext);
+      await fsp.writeFile(out, buf);
+      return path.basename(out);
+    } catch (e) {
+      return '';
+    }
+  }
+  return '';
 }
 
 /* TXT files carry no cover of their own, but many NAS libraries keep a
@@ -844,25 +855,15 @@ async function buildBook(entry, cfg, folder, previous, preStat, coverSet, preGue
   try {
     if (ext === 'epub') {
       scraped = await scrapeEpub(full, cfg.coverDir, id);
-      // EPUB without a declared cover: let Calibre render one from page 1.
-      if (!scraped.coverFile) {
-        const cal = await scrapeWithCalibre(full, cfg.coverDir, id);
-        if (cal.coverFile) scraped.coverFile = cal.coverFile;
-        if (cal.title && !isJunkMeta(cal.title, false) &&
-            (!scraped.title || isJunkMeta(scraped.title, false))) scraped.title = cal.title;
-        if (cal.author && !isJunkMeta(cal.author, true) &&
-            (!scraped.author || isJunkMeta(scraped.author, true))) scraped.author = cal.author;
-      }
+      // OPF without a declared cover: plenty of files still carry the artwork
+      // under images/cover.jpg, which beats rendering nothing.
+      if (!scraped.coverFile) scraped.coverFile = await epubAnyCover(full, cfg.coverDir, id);
     } else if (ext === 'pdf') {
+      // Document properties only. The cover comes from rendering page one
+      // further down, which works for scanned sets that have no artwork at all.
       scraped = await scrapePdf(full);
-      const cal = await scrapeWithCalibre(full, cfg.coverDir, id);
-      if (cal.coverFile) scraped.coverFile = cal.coverFile;
-      if (cal.title && !isJunkMeta(cal.title, false) &&
-          (!scraped.title || isJunkMeta(scraped.title, false))) scraped.title = cal.title;
-      if (cal.author && !isJunkMeta(cal.author, true) &&
-          (!scraped.author || isJunkMeta(scraped.author, true))) scraped.author = cal.author;
     } else if (ext === 'mobi' || ext === 'azw3') {
-      scraped = await scrapeWithCalibre(full, cfg.coverDir, id);
+      scraped = await scrapeMobi(full, cfg.coverDir, id);
     } else if (ext === 'txt') {
       scraped = await scrapeTxt(full);
     }
@@ -991,8 +992,8 @@ async function scan(cfg, folders) {
     }
 
     // Pass 2 — unchanged books are answered straight from the old index; only
-    // the new or modified ones reach a parser or Calibre, at a lower
-    // concurrency so ebook-meta processes do not pile up on a small NAS.
+    // the new or modified ones reach a parser, at a lower concurrency so
+    // pdftoppm renders do not pile up on a small NAS.
     const todo = [];
     const found = new Array(probed.length);
     probed.forEach((p, i) => {

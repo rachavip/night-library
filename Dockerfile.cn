@@ -1,0 +1,67 @@
+# 国内源版 Dockerfile：apt 走阿里云镜像，npm 走 npmmirror。
+# 用途：在 NAS 上本地构建时使用，绕开 GHCR 拉取慢的问题。
+# 用法：docker compose -f docker-compose.cn.yml up -d --build
+# 功能与原 Dockerfile 完全一致（含 KindleUnpack，可在线读 MOBI/AZW3）。
+
+FROM node:20-bookworm-slim
+
+# ---------- 1. 替换 Debian apt 源为阿里云 ----------
+# bookworm 同时可能存在传统 sources.list 与 deb822 格式的 debian.sources，
+# 两种都处理，sed 失败也不中断构建。
+RUN set -eux; \
+    if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+      sed -i \
+        -e 's|http://deb.debian.org/debian|https://mirrors.aliyun.com/debian|g' \
+        -e 's|http://security.debian.org/debian-security|https://mirrors.aliyun.com/debian-security|g' \
+        /etc/apt/sources.list.d/debian.sources; \
+    fi; \
+    if [ -f /etc/apt/sources.list ]; then \
+      sed -i \
+        -e 's|http://deb.debian.org|https://mirrors.aliyun.com|g' \
+        -e 's|http://security.debian.org|https://mirrors.aliyun.com|g' \
+        /etc/apt/sources.list; \
+    fi
+
+# python3 运行 vendor/kindleunpack（MOBI/AZW3 -> EPUB），poppler-utils 提供
+# pdftoppm 渲染扫描版 PDF 的首页当封面。两者合计约 30MB。
+# 早先这里装的是 Calibre，为了 52 本 Kindle 书带进 ~700MB 的 Qt6。
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 \
+      poppler-utils \
+    && rm -rf /var/lib/apt/lists/* /usr/share/doc/* /usr/share/man/*
+
+ENV TZ=Asia/Shanghai \
+    BOOKS_DIR=/books \
+    DATA_DIR=/app/data \
+    PORT=8080
+
+WORKDIR /app
+
+COPY package.json package-lock.json* ./
+# ---------- 2. 替换 lock 文件里的 tarball 地址 ----------
+# npm 优先使用 package-lock.json 中的 resolved 地址，仅设置 registry 无效。
+# 这里把 registry.npmjs.org 地址换成国内镜像，tarball 内容与官方一致，integrity 不变。
+RUN sed -i 's|https://registry.npmjs.org/|https://registry.npmmirror.com/|g' package-lock.json 2>/dev/null || true
+
+# pdf.js 的 canvas 是可选的 Node 依赖，浏览器渲染用不到，编译它需要额外原生包。
+# --ignore-scripts：package.json 的 postinstall 依赖 scripts/，此时尚未复制，
+# 因此在 COPY . . 之后手动执行 prepare-vendor.js。
+RUN npm install --registry=https://registry.npmmirror.com --ignore-scripts --omit=dev --omit=optional --no-audit --no-fund
+
+COPY . .
+
+# prepare-vendor 把浏览器用的 bundle 从 node_modules 拷出来，之后 pdfjs-dist
+# （32MB 只用了两个文件）和 epubjs（6.6MB 只用了一个）就没用了，删掉省体积。
+# jszip 保留：server/convert.js 用它把 MOBI7 的散装目录重新压成 EPUB。
+# vendor/kindleunpack 以单个 zip 分发（仓库里更新只需拖一个文件），这里解压后删除。
+RUN node scripts/prepare-vendor.js \
+ && rm -rf node_modules/pdfjs-dist node_modules/epubjs \
+ && if [ -f vendor/kindleunpack.zip ]; then \
+      python3 -c "import zipfile; zipfile.ZipFile('vendor/kindleunpack.zip').extractall('vendor/kindleunpack')" \
+      && rm -f vendor/kindleunpack.zip; \
+    fi
+
+VOLUME ["/books", "/app/data"]
+EXPOSE 8080
+
+CMD ["node", "server/index.js"]

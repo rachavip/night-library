@@ -1174,8 +1174,8 @@
       authorEl.textContent = book.author || '佚名';
       saved = book.progress;
       if (book.format === 'mobi' || book.format === 'azw3') {
-        // Calibre conversion runs on the NAS and is not instant: ask for it
-        // first so a failure surfaces as text instead of a silent blank page.
+        // Unpacking runs on the NAS and is not instant: ask for it first so a
+        // failure surfaces as text instead of a silent blank page.
         setBusy('第一次打开要先把 ' + book.format.toUpperCase() + ' 转成可翻页的版本，请稍等…');
         await api('/api/book/' + encodeURIComponent(id) + '/prepare');
       }

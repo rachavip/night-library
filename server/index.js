@@ -379,7 +379,7 @@ app.get('/api/stats', (req, res) => {
     scannedAt: currentIndex.scannedAt,
     lastScan: currentIndex.stats || null,
     formats,
-    calibre: converter.isAvailable(),
+    converter: converter.isAvailable(),
     booksDir: cfg.booksDir,
     folders: currentIndex.folders || [],
     scanning: scanning,
@@ -506,9 +506,9 @@ app.get('/api/book/:id/text', async (req, res) => {
 });
 
 // MOBI / AZW3 have to be turned into EPUB before the browser can page through
-// them, and Calibre takes a while. The reader asks here first so a failure can
-// be reported as a sentence instead of an opaque "cannot load book" in the
-// epub.js layer.
+// them, and unpacking a 100MB book takes a few seconds. The reader asks here
+// first so a failure can be reported as a sentence instead of an opaque
+// "cannot load book" in the epub.js layer.
 app.get('/api/book/:id/prepare', async (req, res) => {
   const book = findBook(req.params.id);
   if (!book) return res.status(404).json({ error: '没有找到这本书' });

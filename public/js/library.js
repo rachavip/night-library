@@ -724,7 +724,7 @@
       } else if (stats.scanOnStart) {
         bits.push('启动时自动整理');
       }
-      if (!stats.calibre) bits.push('未检测到 Calibre，MOBI/AZW3 无法在线阅读');
+      if (!stats.converter) bits.push('镜像缺少 Kindle 解包器，MOBI/AZW3 无法在线阅读');
       document.getElementById('stat-meta').textContent = bits.join(' · ');
       renderFilters();
     } catch (e) {
