@@ -14,8 +14,11 @@ services:
       - ./data:/app/data
     environment:
       TZ: Asia/Shanghai
-      # 默认书籍目录（示例，改成自己的）
-      BOOKS_DIR: /vol1/1000/EBook
+      # 默认书籍目录。这里是镜像自带的 demo-books（3 本示例 txt），
+      # 好处是本地没有 /vol1/1000/EBook 之类的目录时，首次启动也不会报路径不存在，
+      # 打开就能看到书架。实际使用请改成自己的书库目录，例如：
+      #   BOOKS_DIR: /vol1/1000/电子书文件夹名
+      BOOKS_DIR: /app/demo-books
       DATA_DIR: /app/data
       PORT: "8080"
       # 可选：自动刮削（不写就用网页里的设置）

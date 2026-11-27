@@ -16,6 +16,7 @@ services:
       - ./data:/app/data
     environment:
       TZ: Asia/Shanghai
-      BOOKS_DIR: /vol1/1000/EBook
+      # 默认用 demo-books 示例书；实际改成自己的书库目录，如 /vol1/1000/电子书文件夹名
+      BOOKS_DIR: /app/demo-books
       DATA_DIR: /app/data
       PORT: "8080"

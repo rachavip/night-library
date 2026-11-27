@@ -2,7 +2,8 @@ node_modules
 data
 .git
 .github
-demo-books
+# demo-books 要打进镜像：它只有 3 个 txt（约 12KB），用作 BOOKS_DIR 的默认值，
+# 这样本地没有自己的书库目录时，首次启动也能看到书架、不会报路径不存在。
 test-folders
 *.log
 .DS_Store

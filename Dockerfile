@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* /usr/share/doc/* /usr/share/man/*
 
 ENV TZ=Asia/Shanghai \
-    BOOKS_DIR=/books \
+    BOOKS_DIR=/app/demo-books \
     DATA_DIR=/app/data \
     PORT=8080
 
@@ -48,7 +48,7 @@ RUN node scripts/prepare-vendor.js \
       && rm -f vendor/kindleunpack.zip; \
     fi
 
-VOLUME ["/books", "/app/data"]
+VOLUME ["/app/data"]
 EXPOSE 8080
 
 CMD ["node", "server/index.js"]

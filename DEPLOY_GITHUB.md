@@ -182,7 +182,9 @@ GHCR 要求用户名小写，`rachavip` 已是小写，可直接使用。
    ```yaml
    image: ghcr.io/rachavip/night-library:latest
    ```
-   > **注意区分两个目录**：compose 文件放在项目目录 `/vol1/1000/docker/night-library`（示例）；你的电子书放在书籍目录 `/vol1/1000/EBook`（示例，`BOOKS_DIR` 指向它）。**不要把书放进项目目录**。因为挂载了整个 `/vol1`，网页里也能再添加 `/vol1` 下的其他目录。
+   > **注意区分两个目录**：compose 文件放在项目目录 `/vol1/1000/docker/night-library`（示例）；你的电子书放在书籍目录 `/vol1/1000/EBook`（示例）。**不要把书放进项目目录**。因为挂载了整个 `/vol1`，网页里也能再添加 `/vol1` 下的其他目录。
+   >
+   > `BOOKS_DIR` 默认填的是镜像自带的 `demo-books`（3 本示例 txt），首次启动就有书架、不会报路径不存在；要读自己的书，把它改成 `/vol1/1000/电子书文件夹名`，或者在网页 ⚙ →「电子书文件夹」里添加。
 4. 拉取并启动：
    ```bash
    docker compose pull
