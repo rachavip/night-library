@@ -24,7 +24,12 @@
   var batchCount = document.getElementById('batch-count');
   var seriesPicker = document.getElementById('series-picker');
   var seriesPickerList = document.getElementById('series-picker-list');
+  var seriesPickerHint = document.getElementById('series-picker-hint');
+  var seriesPickerNew = document.getElementById('series-picker-new');
+  var seriesNewHint = document.getElementById('series-new-hint');
   var seriesNewName = document.getElementById('series-new-name');
+  // 同一个面板干两件事：'add' 保留原归属，'move' 只留目标那一组。
+  var pickerMode = 'add';
   var continueBox = document.getElementById('continue');
   var continueMain = document.getElementById('continue-main');
   var continueImg = document.getElementById('continue-img');
@@ -72,9 +77,15 @@
   async function api(url, options) {
     var res = await fetch(url, options);
     if (!res.ok) {
-      var detail = '';
-      try { detail = (await res.json()).error || ''; } catch (e) { /* ignore */ }
-      throw new Error(detail || ('请求失败 ' + res.status));
+      var payload = null;
+      try { payload = await res.json(); } catch (e) { /* 非 JSON 错误页 */ }
+      // 409 会带回「撞上哪个分组」，交给调用方决定合并还是放弃。
+      var err = new Error((payload && payload.error) || ('请求失败 ' + res.status));
+      if (payload) {
+        if (payload.code) err.code = payload.code;
+        if (payload.match) err.match = payload.match;
+      }
+      throw err;
     }
     return res.json();
   }
@@ -354,9 +365,17 @@
     try {
       var r = await send('/api/collections', 'POST', { name: name });
       await loadShelves();
+      if (r.merged) {
+        toast('已有「' + r.collection.name + '」分组，没有重复创建');
+        return r.collection;
+      }
       toast('已创建丛书「' + r.collection.name + '」');
       return r.collection;
     } catch (e) {
+      if (e.code === 'AUTO_NAME' && e.match) {
+        toast('已有「' + e.match.name + '」分组（自动归组），换个名字，或用「加入丛书」合并进去');
+        return null;
+      }
       toast(e.message);
       return null;
     }
@@ -375,6 +394,30 @@
       await send('/api/collections/' + encodeURIComponent(id), 'PUT', { name: next });
       await loadShelves();
       toast('已改名为「' + next + '」');
+    } catch (e) {
+      // 撞上已有分组：不硬拦，问一句要不要合成一组。
+      if (e.code === 'DUPLICATE' && e.match) {
+        await mergeInto(id, item, next, e.match);
+        return;
+      }
+      toast(e.message);
+    }
+  }
+
+  async function mergeInto(fromId, item, next, match) {
+    var ask = '已有「' + match.name + '」分组' + (match.auto ? '（自动归组）' : '') +
+      '，共 ' + match.count + ' 本。\n\n把「' + item.name + '」（' + item.count + ' 本）并进去吗？' +
+      (match.auto
+        ? '\n合并后这一组改为手动丛书，按书名自动归组不再生效。'
+        : '\n合并后「' + item.name + '」不再单独存在，书一本不少。');
+    if (!window.confirm(ask)) return;
+    try {
+      var r = await send('/api/collections/merge', 'POST',
+        { from: fromId, into: match.id, name: next });
+      if (state.shelf === fromId) state.shelf = r.collection.id;
+      await loadShelves();
+      await renderBooks();
+      toast('已合并到「' + r.collection.name + '」，共 ' + r.collection.count + ' 本');
     } catch (e) {
       toast(e.message);
     }
@@ -738,22 +781,35 @@
     }
   });
 
+  async function finishSingleJoin(r) {
+    pickerInput.value = '';
+    await loadShelves();
+    await refreshSheet();
+    renderShelfPicker();
+    await renderBooks();
+    toast('已加入「' + r.collection.name + '」');
+  }
+
   document.getElementById('shelf-new-btn').addEventListener('click', async function () {
     var name = pickerInput.value.trim();
     if (!name) { pickerInput.focus(); return; }
+    var ids = sheetBook ? [sheetBook.id] : [];
     try {
-      var r = await send('/api/collections', 'POST', { name: name });
-      if (sheetBook) {
-        await send('/api/collections/' + encodeURIComponent(r.collection.id), 'PUT', { add: [sheetBook.id] });
-      }
-      pickerInput.value = '';
-      await loadShelves();
-      await refreshSheet();
-      renderShelfPicker();
-      await renderBooks();
-      toast('已加入「' + r.collection.name + '」');
+      // 同名会自动并进已有组，所以一次请求就够，不必先建后加。
+      await finishSingleJoin(await send('/api/collections', 'POST', { name: name, add: ids }));
     } catch (err) {
-      toast(err.message);
+      if (err.code !== 'AUTO_NAME' || !err.match) { toast(err.message); return; }
+      if (!window.confirm('已有「' + err.match.name + '」分组（自动归组，' + err.match.count + ' 本）。\n\n' +
+        '并进这一组吗？合并后这一组改为手动维护，原有的 ' + err.match.count + ' 本一起保留。')) return;
+      try {
+        await finishSingleJoin(await send('/api/collections', 'POST', {
+          name: name,
+          add: ids,
+          adopt: String(err.match.id || '').replace(/^auto:/, '')
+        }));
+      } catch (e2) {
+        toast(e2.message);
+      }
     }
   });
   pickerInput.addEventListener('keydown', function (e) {
@@ -961,7 +1017,7 @@
     }
     batchCount.textContent = '已选 ' + state.selected.size + ' 本';
     var none = state.selected.size === 0;
-    ['batch-hide', 'batch-unhide', 'batch-series'].forEach(function (id) {
+    ['batch-hide', 'batch-unhide', 'batch-series', 'batch-move'].forEach(function (id) {
       document.getElementById(id).disabled = none;
     });
     document.getElementById('batch-all').textContent = '全选 ' + lastBooks.length + ' 本';
@@ -1012,17 +1068,59 @@
     }
   }
 
+  // 手动丛书才列出来：自动组的成员是书名算出来的，加不进也移不进。
+  function manualShelves() {
+    return shelves.filter(function (s) { return !s.auto; });
+  }
+
   function renderSeriesPicker() {
-    // 只能往手动丛书里加：自动组的成员是书名算出来的，加不进去。
-    var manual = shelves.filter(function (s) { return !s.auto; });
+    var manual = manualShelves();
     if (!manual.length) {
-      seriesPickerList.innerHTML = '<p class="shelf-picker-empty">还没有手动建的丛书，在下面新建一个。</p>';
+      seriesPickerList.innerHTML = '<p class="shelf-picker-empty">' +
+        (pickerMode === 'move'
+          ? '还没有手动丛书，先用「加入丛书」建一个。'
+          : '还没有手动建的丛书，在下面新建一个。') + '</p>';
       return;
     }
     seriesPickerList.innerHTML = manual.map(function (s) {
       return '<button type="button" class="shelf-picker-row" data-put="' + esc(s.id) + '">' +
         '<span>' + esc(s.name) + '</span><em>' + s.count + ' 本</em></button>';
     }).join('');
+  }
+
+  function seriesNameKey(name) {
+    return String(name || '').replace(/\s+/g, '').toLowerCase();
+  }
+
+  // 输入的新名字如果已经有一组，先把话说清楚，别让人以为又开了一个。
+  function syncNewHint() {
+    var name = seriesNewName.value.trim();
+    var hit = name ? shelves.find(function (s) { return seriesNameKey(s.name) === seriesNameKey(name); }) : null;
+    if (!hit) { seriesNewHint.hidden = true; return; }
+    seriesNewHint.hidden = false;
+    seriesNewHint.textContent = hit.auto
+      ? '已有「' + hit.name + '」分组（自动归组，' + hit.count + ' 本）；确认后会转成手动丛书，原有的书一起保留。'
+      : '已有「' + hit.name + '」分组（' + hit.count + ' 本），会合并进这一组，不会再开新组。';
+  }
+
+  function openPicker(mode) {
+    if (!state.selected.size) { toast('先勾选几本书'); return; }
+    // 再点同一个按钮就收起来，点另一个按钮则换成另一种用法。
+    if (!seriesPicker.hidden && pickerMode === mode) { seriesPicker.hidden = true; return; }
+    pickerMode = mode;
+    seriesPicker.hidden = false;
+    var moving = mode === 'move';
+    seriesPickerNew.hidden = moving;
+    seriesNewHint.hidden = true;
+    seriesPickerHint.textContent = moving
+      ? '选一组已有的丛书。书会从原来的丛书里移出，只留这一组。'
+      : '归进已有的组，或在下面输入新名字；名字已存在就合并进那一组。';
+    renderSeriesPicker();
+    if (moving) return;
+    // Searching "西游记" then grouping is the common path, so the search box
+    // is the best guess for a name — still editable.
+    seriesNewName.value = document.getElementById('search').value.trim();
+    syncNewHint();
   }
 
   async function addSelectedToSeries(id) {
@@ -1039,9 +1137,44 @@
     }
   }
 
+  async function moveSelectedToSeries(id) {
+    var ids = Array.from(state.selected);
+    if (!ids.length) return;
+    var item = shelves.find(function (s) { return s.id === id; });
+    try {
+      var r = await send('/api/collections/' + encodeURIComponent(id) + '/move', 'POST', { ids: ids });
+      await loadShelves();
+      // 正在看某个丛书时，移走的书就该从这一格里消失。
+      await renderBooks();
+      seriesPicker.hidden = true;
+      toast('已把 ' + ids.length + ' 本移到「' + ((item && item.name) || '丛书') + '」' +
+        (r.removed ? '，并从原丛书移出 ' + r.removed + ' 处' : ''));
+    } catch (e) {
+      toast(e.message);
+    }
+  }
+
+  // 名字撞上自动组：自动组是按书名算的，收不了书，只能先转成手动组。
+  async function joinAutoGroup(name, match, ids) {
+    var ok = window.confirm('已有「' + match.name + '」分组（自动归组，' + match.count + ' 本）。\n\n' +
+      '把这 ' + ids.length + ' 本合并进去吗？合并后这一组改为手动维护，原有的 ' + match.count + ' 本一起保留。');
+    if (!ok) return null;
+    var r = await send('/api/collections', 'POST', {
+      name: name,
+      add: ids,
+      adopt: String(match.id || '').replace(/^auto:/, '')
+    });
+    await loadShelves();
+    seriesPicker.hidden = true;
+    seriesNewName.value = '';
+    seriesNewHint.hidden = true;
+    toast('已合并进「' + r.collection.name + '」，这一组改为手动维护');
+    return r;
+  }
+
   selectModeBtn.addEventListener('click', function () {
     setSelecting(!state.selecting);
-    if (state.selecting) toast('勾选书，再点「隐藏」或「加入丛书」');
+    if (state.selecting) toast('勾选书，再点「隐藏」「加入丛书」或「移动到丛书」');
   });
   document.getElementById('batch-exit').addEventListener('click', function () { setSelecting(false); });
   document.getElementById('batch-all').addEventListener('click', function () {
@@ -1051,37 +1184,39 @@
   });
   document.getElementById('batch-hide').addEventListener('click', function () { hideSelected(true); });
   document.getElementById('batch-unhide').addEventListener('click', function () { hideSelected(false); });
-  document.getElementById('batch-series').addEventListener('click', function () {
-    seriesPicker.hidden = !seriesPicker.hidden;
-    if (!seriesPicker.hidden) {
-      renderSeriesPicker();
-      // Searching "西游记" then grouping is the common path, so the search box
-      // is the best guess for a name — still editable.
-      seriesNewName.value = document.getElementById('search').value.trim();
-    }
-  });
+  document.getElementById('batch-series').addEventListener('click', function () { openPicker('add'); });
+  document.getElementById('batch-move').addEventListener('click', function () { openPicker('move'); });
   seriesPickerList.addEventListener('click', function (e) {
     var btn = e.target.closest ? e.target.closest('[data-put]') : null;
     if (!btn) return;
-    addSelectedToSeries(btn.getAttribute('data-put'));
+    var id = btn.getAttribute('data-put');
+    if (pickerMode === 'move') moveSelectedToSeries(id);
+    else addSelectedToSeries(id);
   });
   document.getElementById('series-new-btn').addEventListener('click', async function () {
     var name = seriesNewName.value.trim();
     if (!name) { seriesNewName.focus(); return; }
     if (!state.selected.size) { toast('先勾选几本书'); return; }
+    var ids = Array.from(state.selected);
     try {
-      var created = await send('/api/collections', 'POST', { name: name });
-      await send('/api/collections/' + encodeURIComponent(created.collection.id), 'PUT',
-        { add: Array.from(state.selected) });
-      var total = state.selected.size;
+      // 服务端会在同名时直接并进已有组，所以这里不再先建后加。
+      var r = await send('/api/collections', 'POST', { name: name, add: ids });
       seriesNewName.value = '';
+      seriesNewHint.hidden = true;
       await loadShelves();
       seriesPicker.hidden = true;
-      toast('已建丛书「' + created.collection.name + '」并加入 ' + total + ' 本');
+      toast(r.merged
+        ? '已有「' + r.collection.name + '」分组，已把 ' + ids.length + ' 本合并进去'
+        : '已建丛书「' + r.collection.name + '」并加入 ' + ids.length + ' 本');
     } catch (e) {
+      if (e.code === 'AUTO_NAME' && e.match) {
+        try { await joinAutoGroup(name, e.match, ids); } catch (err) { toast(err.message); }
+        return;
+      }
       toast(e.message);
     }
   });
+  seriesNewName.addEventListener('input', syncNewHint);
   seriesNewName.addEventListener('keydown', function (e) {
     if (e.key === 'Enter') {
       e.preventDefault();

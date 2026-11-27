@@ -21,6 +21,7 @@ const DEFAULTS = {
   systemName: '夜读',
   subtitle: '我的书房',
   theme: 'night',
+  typeface: 'kai',
   folders: [],
   background: { enabled: false, data: '', blur: 0, dim: 0.55 },
   // Scan schedule is editable in the settings drawer. compose env vars can
@@ -96,6 +97,9 @@ function cleanFolders(value) {
 }
 
 const THEMES = new Set(['night', 'paper', 'ink', 'tide']);
+// 字体风格与配色主题正交：同一套配色可以配四种排版。值对应 tokens.css 里的
+// :root[data-typeface="..."]，默认 kai 直接写在 :root 上。
+const TYPEFACES = new Set(['kai', 'song', 'sans', 'li']);
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -160,6 +164,7 @@ async function load(cfg) {
     out.systemName = cleanString(raw.systemName, 40, DEFAULTS.systemName);
     out.subtitle = cleanString(raw.subtitle, 60, DEFAULTS.subtitle);
     if (THEMES.has(raw.theme)) out.theme = raw.theme;
+    if (TYPEFACES.has(raw.typeface)) out.typeface = raw.typeface;
     const folders = cleanFolders(raw.folders);
     out.folders = (folders !== null && folders.length) ? folders : [cfg.booksDir];
     const bg = raw.background || {};
@@ -208,6 +213,7 @@ function merge(current, input) {
     out.subtitle = cleanString(src.subtitle, 60, DEFAULTS.subtitle);
   }
   if (THEMES.has(src.theme)) out.theme = src.theme;
+  if (TYPEFACES.has(src.typeface)) out.typeface = src.typeface;
   const folders = cleanFolders(src.folders);
   if (folders !== null) out.folders = folders;
 
@@ -248,4 +254,4 @@ function forBrowser(settings) {
   return out;
 }
 
-module.exports = { DEFAULTS, THEMES, clone, load, save, merge, applyEnv, forBrowser };
+module.exports = { DEFAULTS, THEMES, TYPEFACES, clone, load, save, merge, applyEnv, forBrowser };

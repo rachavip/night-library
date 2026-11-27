@@ -17,7 +17,21 @@
 
   --serif: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", Georgia, serif;
   --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  /* 楷体只用在标题和分组名上：Windows 是「楷体」，macOS 是 Kaiti SC，
+   * 两者都没有时退回宋体，宁可变成宋体也不要变成黑体，气质不能丢。 */
+  --kai: "Kaiti SC", "STKaiti", "KaiTi", "楷体", "AR PL UKai CN", "Source Han Serif SC", "Songti SC", serif;
+  /* 隶书只有 Windows 自带（LiSu），macOS 要装了 Office 才有 STLiti，手机基本没有。
+   * 所以隶书主题在设置里明确标成「仅 Windows 稳」，缺字时退回楷体而不是黑体。 */
+  --li: "LiSu", "隶书", "STLiti", "华文隶书", "Kaiti SC", "KaiTi", "楷体", serif;
   --mono: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+
+  /* ---- 排版角色：字体风格（设置 → 字体风格）改的就是这三组 ----
+   * brand  顶栏「夜读」        head  大标题 / 分组名 / 抽屉标题
+   * book   书名（卡片、详情、继续阅读）
+   * 配色主题与字体风格互不影响，可以任意组合。 */
+  --f-brand: var(--kai);  --w-brand: 700;  --ls-brand: 3px;
+  --f-head: var(--kai);   --w-head: 700;   --ls-head: 2px;
+  --f-book: var(--kai);   --w-book: 700;   --ls-book: 0.02em;
 
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
 }
@@ -62,3 +76,26 @@
 :root[data-app-theme="paper"] { --scrim: rgba(239, 233, 220, 0.70); }
 :root[data-app-theme="ink"] { --scrim: rgba(7, 9, 11, 0.68); }
 :root[data-app-theme="tide"] { --scrim: rgba(7, 26, 27, 0.66); }
+
+/* ---- 字体风格。Applied via <html data-typeface="..."> ----
+ * 默认（kai 楷书通排）写在 :root 里，下面三个是另外三套。
+ * 每套只换字体族、字重、字距——字号跟着布局走，不随风格变，避免版面跳动。 */
+/* 宋体书卷：书名与标题回到宋体。宋体没有真粗体，700 在 Windows 上是合成的，
+ * 所以降到 600，靠字距（5px）撑住标题的气派。 */
+:root[data-typeface="song"] {
+  --f-brand: var(--serif); --w-brand: 600; --ls-brand: 6px;
+  --f-head: var(--serif);  --w-head: 600;  --ls-head: 4px;
+  --f-book: var(--serif);  --w-book: 600;  --ls-book: 0.01em;
+}
+/* 黑体骨架：最稳、最显眼，任何设备都不跑版，书卷气少一些。 */
+:root[data-typeface="sans"] {
+  --f-brand: var(--sans); --w-brand: 800; --ls-brand: 2px;
+  --f-head: var(--sans);  --w-head: 800;  --ls-head: 3px;
+  --f-book: var(--sans);  --w-book: 600;  --ls-book: 0;
+}
+/* 隶书骨架：品牌与分组名走隶书，书名仍是宋体——隶书笔画重，堆在书名上会糊。 */
+:root[data-typeface="li"] {
+  --f-brand: var(--li);   --w-brand: 700;  --ls-brand: 5px;
+  --f-head: var(--li);    --w-head: 700;  --ls-head: 4px;
+  --f-book: var(--serif); --w-book: 600;  --ls-book: 0.01em;
+}

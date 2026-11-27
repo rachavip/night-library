@@ -22,6 +22,18 @@ function cleanName(raw) {
   return String(raw == null ? '' : raw).replace(/[\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, MAX_NAME);
 }
 
+// Two names that differ only in case or spacing are the same series as far as a
+// reader is concerned, so they must not sit next to each other in the rail.
+function nameKey(raw) {
+  return cleanName(raw).replace(/\s+/g, '').toLowerCase();
+}
+
+function findByName(state, rawName) {
+  const key = nameKey(rawName);
+  if (!key) return null;
+  return state.collections.find(c => nameKey(c.name) === key) || null;
+}
+
 function cleanState(raw) {
   const state = emptyState();
   if (!raw || !Array.isArray(raw.collections)) return state;
@@ -82,7 +94,7 @@ function create(state, rawName) {
     err.code = 'TOO_MANY';
     throw err;
   }
-  if (state.collections.some(c => c.name === name)) {
+  if (findByName(state, name)) {
     const err = new Error('已经有一个叫「' + name + '」的书单');
     err.code = 'DUPLICATE';
     throw err;
@@ -102,7 +114,7 @@ function rename(state, id, rawName) {
     err.code = 'BAD_NAME';
     throw err;
   }
-  if (state.collections.some(c => c.id !== id && c.name === name)) {
+  if (state.collections.some(c => c.id !== id && nameKey(c.name) === nameKey(name))) {
     const err = new Error('已经有一个叫「' + name + '」的书单');
     err.code = 'DUPLICATE';
     throw err;
@@ -132,6 +144,47 @@ function members(state, id, changes) {
   return item;
 }
 
+// Moving files a book from one series to another: it leaves every other series
+// first, so the target is the only place it lives. Adding (members) keeps the
+// old home - that difference is the whole point of the two buttons.
+function moveMembers(state, id, ids) {
+  const target = state.collections.find(c => c.id === id);
+  if (!target) return null;
+  const pick = new Set((Array.isArray(ids) ? ids : []).map(String).filter(Boolean));
+  if (!pick.size) return { item: target, removed: 0, added: 0 };
+  const now = new Date().toISOString();
+  let removed = 0;
+  state.collections.forEach(item => {
+    if (item.id === id) return;
+    const kept = item.bookIds.filter(v => !pick.has(v));
+    if (kept.length === item.bookIds.length) return;
+    removed += item.bookIds.length - kept.length;
+    item.bookIds = kept;
+    item.updatedAt = now;
+  });
+  const set = new Set(target.bookIds);
+  const before = set.size;
+  pick.forEach(v => set.add(v));
+  target.bookIds = Array.from(set);
+  target.updatedAt = now;
+  return { item: target, removed, added: target.bookIds.length - before };
+}
+
+// Two hand-built series with the same meaning get folded into one; the source
+// disappears and its books join the target.
+function merge(state, fromId, intoId) {
+  const from = state.collections.find(c => c.id === fromId);
+  const into = state.collections.find(c => c.id === intoId);
+  if (!from || !into || from.id === into.id) return null;
+  const set = new Set(into.bookIds);
+  from.bookIds.forEach(id => set.add(id));
+  into.bookIds = Array.from(set);
+  into.updatedAt = new Date().toISOString();
+  const moved = from.bookIds.length;
+  state.collections.splice(state.collections.indexOf(from), 1);
+  return { item: into, moved };
+}
+
 // Called after a scan: a renamed file changes its id, and a deleted file leaves
 // an id that no longer resolves. Dropping them keeps counts honest.
 function prune(state, validIds) {
@@ -153,6 +206,10 @@ module.exports = {
   rename,
   remove,
   members,
+  moveMembers,
+  merge,
+  findByName,
+  nameKey,
   prune,
   cleanName
 };

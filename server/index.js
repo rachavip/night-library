@@ -747,11 +747,77 @@ app.post('/api/series/restore', async (req, res) => {
   res.json({ ok: true, collections: autoShelves.length });
 });
 
+// Adding books to a series, folding an auto group into a hand-held one, and
+// renaming into an existing name all end up here: one group, union of members.
+function shelfShape(c) {
+  return {
+    id: c.id,
+    name: c.name,
+    count: c.bookIds.length,
+    bookIds: c.bookIds,
+    auto: !!c.auto,
+    keyword: c.keyword || null,
+    createdAt: c.createdAt
+  };
+}
+
+// Anything already on the rail that answers to this name, other than `selfId`.
+function clashOf(rawName, selfId) {
+  const key = collections.nameKey(rawName);
+  if (!key) return null;
+  const hit = allShelves().find(s => s.id !== selfId && collections.nameKey(s.name) === key);
+  return hit ? { id: hit.id, name: hit.name, count: hit.bookIds.length, auto: !!hit.auto } : null;
+}
+
+// A group worked out from titles cannot be written to, so merging *into* one
+// means adopting it: the members it has right now become a hand-built series,
+// and the keyword stops generating a second copy.
+function adoptAuto(keyword, rawName) {
+  const shelf = autoShelves.find(s => s.keyword === keyword);
+  if (!shelf) return null;
+  const name = collections.cleanName(rawName) || shelf.name;
+  const item = collections.create(shelvesState, name);
+  item.bookIds = shelf.bookIds.slice();
+  item.updatedAt = new Date().toISOString();
+  series.mute(seriesState, keyword, true);
+  return item;
+}
+
 app.post('/api/collections', async (req, res) => {
+  const body = req.body || {};
+  const name = collections.cleanName(body.name);
+  const add = Array.isArray(body.add) ? body.add.map(String).filter(Boolean) : [];
+  if (!name) return res.status(400).json({ error: '丛书名称不能为空' });
   try {
-    const item = collections.create(shelvesState, (req.body || {}).name);
+    // 「加入丛书」撞上自动组的名字时走这里：把那组转成手动丛书，再收下新书。
+    if (body.adopt) {
+      const adopted = adoptAuto(String(body.adopt), name);
+      if (!adopted) return res.status(404).json({ error: '没有找到这个分组' });
+      if (add.length) collections.members(shelvesState, adopted.id, { add });
+      await collections.save(cfg, shelvesState);
+      await series.save(cfg, seriesState);
+      refreshSeries();
+      return res.json({ ok: true, merged: true, collection: shelfShape(adopted) });
+    }
+    // Same name already hand-built: join it instead of opening a twin.
+    const existing = collections.findByName(shelvesState, name);
+    if (existing) {
+      if (add.length) collections.members(shelvesState, existing.id, { add });
+      await collections.save(cfg, shelvesState);
+      return res.json({ ok: true, merged: true, collection: shelfShape(existing) });
+    }
+    const auto = autoShelves.find(s => collections.nameKey(s.name) === collections.nameKey(name));
+    if (auto) {
+      return res.status(409).json({
+        error: '已有「' + auto.name + '」分组（自动归组）',
+        code: 'AUTO_NAME',
+        match: { id: auto.id, name: auto.name, count: auto.count }
+      });
+    }
+    const item = collections.create(shelvesState, name);
+    if (add.length) collections.members(shelvesState, item.id, { add });
     await collections.save(cfg, shelvesState);
-    res.json({ ok: true, collection: { ...item, count: 0, auto: false } });
+    res.json({ ok: true, collection: shelfShape(item) });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -764,11 +830,17 @@ app.put('/api/collections/:id', async (req, res) => {
   // the name the reader prefers. An empty name falls back to the keyword.
   if (id.indexOf('auto:') === 0) {
     const keyword = id.slice(5);
-    if (!autoShelves.some(s => s.keyword === keyword)) {
+    const shelf = autoShelves.find(s => s.keyword === keyword);
+    if (!shelf) {
       return res.status(404).json({ error: '没有找到这个丛书' });
     }
     try {
       if (body.name !== undefined) {
+        const next = collections.cleanName(body.name);
+        const clash = clashOf(next, id);
+        // Renaming into a name that is already on the rail is a merge request,
+        // not an error: answer with what it would join so the reader can decide.
+        if (clash) return res.status(409).json({ error: '已有「' + clash.name + '」分组', code: 'DUPLICATE', match: clash });
         series.rename(seriesState, keyword, body.name);
         await series.save(cfg, seriesState);
         refreshSeries();
@@ -783,13 +855,71 @@ app.put('/api/collections/:id', async (req, res) => {
   const item = shelvesState.collections.find(c => c.id === id);
   if (!item) return res.status(404).json({ error: '没有找到这个丛书' });
   try {
-    if (body.name !== undefined) collections.rename(shelvesState, item.id, body.name);
+    if (body.name !== undefined) {
+      const next = collections.cleanName(body.name);
+      if (!next) return res.status(400).json({ error: '丛书名称不能为空' });
+      const clash = clashOf(next, id);
+      if (clash) return res.status(409).json({ error: '已有「' + clash.name + '」分组', code: 'DUPLICATE', match: clash });
+      collections.rename(shelvesState, item.id, next);
+    }
     // Adding/removing books and renaming in one call keeps the panel's save
     // button to a single request.
     if (body.add || body.remove) collections.members(shelvesState, item.id, body);
     await collections.save(cfg, shelvesState);
     const fresh = shelvesState.collections.find(c => c.id === item.id);
-    res.json({ ok: true, collection: { ...fresh, count: fresh.bookIds.length } });
+    res.json({ ok: true, collection: shelfShape(fresh) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Books leave every other hand-built series and land in this one.
+app.post('/api/collections/:id/move', async (req, res) => {
+  const ids = Array.isArray((req.body || {}).ids) ? req.body.ids : [];
+  if (!ids.length) return res.status(400).json({ error: '没有选中任何书' });
+  const result = collections.moveMembers(shelvesState, req.params.id, ids);
+  if (!result) return res.status(404).json({ error: '没有找到这个丛书' });
+  await collections.save(cfg, shelvesState);
+  res.json({ ok: true, removed: result.removed, added: result.added, collection: shelfShape(result.item) });
+});
+
+// Fold one group into another. Either side may be an auto group: a computed
+// group cannot receive books, so it is adopted as hand-held first.
+app.post('/api/collections/merge', async (req, res) => {
+  const body = req.body || {};
+  const fromId = String(body.from || '');
+  const intoId = String(body.into || '');
+  if (!fromId || !intoId) return res.status(400).json({ error: '缺少要合并的分组' });
+  if (fromId === intoId) return res.status(400).json({ error: '不能把自己合并到自己' });
+  const from = allShelves().find(s => s.id === fromId);
+  if (!from) return res.status(404).json({ error: '没有找到要合并的分组' });
+  try {
+    let into = shelvesState.collections.find(c => c.id === intoId);
+    if (!into && intoId.indexOf('auto:') === 0) {
+      into = adoptAuto(intoId.slice(5), body.name);
+      if (!into) return res.status(404).json({ error: '没有找到目标分组' });
+    }
+    if (!into) return res.status(404).json({ error: '没有找到目标分组' });
+    let moved;
+    if (from.auto) {
+      // Nothing to delete: an auto group has no stored member list, it only has
+      // to stop being generated.
+      const set = new Set(into.bookIds);
+      from.bookIds.forEach(bookId => set.add(bookId));
+      moved = from.bookIds.length;
+      into.bookIds = Array.from(set);
+      into.updatedAt = new Date().toISOString();
+      series.mute(seriesState, from.keyword, true);
+    } else {
+      const folded = collections.merge(shelvesState, from.id, into.id);
+      if (!folded) return res.status(404).json({ error: '没有找到要合并的分组' });
+      moved = folded.moved;
+      into = folded.item;
+    }
+    await collections.save(cfg, shelvesState);
+    await series.save(cfg, seriesState);
+    refreshSeries();
+    res.json({ ok: true, moved, collection: shelfShape(into) });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }

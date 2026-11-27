@@ -5,6 +5,7 @@
   var root = document.documentElement;
   var settings = null;
   var pendingTheme = 'night';
+  var pendingTypeface = 'kai';
   var pendingBg = null; // { data, enabled }
   var bgVersion = 0;
 
@@ -27,6 +28,66 @@
     Array.prototype.forEach.call(document.querySelectorAll('.theme-card'), function (btn) {
       btn.setAttribute('aria-checked', String(btn.dataset.theme === theme));
     });
+  }
+
+  /* ---------- 字体风格 ---------- */
+  // 每套的探针字体名：命中任意一个就算本机能显示。sans 用系统默认黑体，一定在。
+  var TYPEFACES = {
+    kai: { probe: ['Kaiti SC', 'STKaiti', 'KaiTi', '楷体'], fallback: '宋体' },
+    song: { probe: ['Songti SC', 'SimSun', '宋体'], fallback: '系统默认衬线' },
+    sans: { probe: null, fallback: '' },
+    li: { probe: ['LiSu', '隶书', 'STLiti', '华文隶书'], fallback: '楷体' }
+  };
+
+  var probeCtx = null;
+  // document.fonts.check 对系统字体几乎恒为 true，测不出缺字，只能量宽度：
+  // 字体存在时宽度和基准不同，不存在时会落回基准，两者相等。
+  function hasFamily(name) {
+    try {
+      if (!probeCtx) probeCtx = document.createElement('canvas').getContext('2d');
+      var text = '夜读 Wg 123';
+      var bases = ['monospace', 'sans-serif'];
+      for (var i = 0; i < bases.length; i++) {
+        probeCtx.font = '40px ' + bases[i];
+        var plain = probeCtx.measureText(text).width;
+        probeCtx.font = '40px "' + name + '", ' + bases[i];
+        var hit = probeCtx.measureText(text).width;
+        if (Math.abs(plain - hit) > 0.5) return true;
+      }
+    } catch (e) { return true; } // canvas 不可用就别误报缺失
+    return false;
+  }
+
+  function applyTypeface(name) {
+    pendingTypeface = TYPEFACES[name] ? name : 'kai';
+    root.setAttribute('data-typeface', pendingTypeface);
+    Array.prototype.forEach.call(document.querySelectorAll('.type-card'), function (btn) {
+      btn.setAttribute('aria-checked', String(btn.dataset.typeface === pendingTypeface));
+    });
+  }
+
+  // 卡片上标出「本机没这个字体」，让人在别的系统上换一套，而不是看着字跑版。
+  function markTypefaceSupport() {
+    Array.prototype.forEach.call(document.querySelectorAll('.type-card'), function (card) {
+      var conf = TYPEFACES[card.dataset.typeface];
+      var warn = card.querySelector('.type-warn');
+      if (!conf || !warn) return;
+      if (!conf.probe || conf.probe.some(hasFamily)) {
+        warn.hidden = true;
+        warn.textContent = '';
+        return;
+      }
+      warn.hidden = false;
+      warn.textContent = '本机无此字体';
+      warn.title = '这台设备没装「' + conf.probe[conf.probe.length - 1] + '」，会退回' + conf.fallback + '。换一套风格即可。';
+    });
+    var note = el('typeface-note');
+    if (note) {
+      var missing = Array.prototype.filter.call(document.querySelectorAll('.type-warn'), function (w) {
+        return w.hidden === false;
+      }).length;
+      note.textContent = missing ? missing + ' 套本机缺字体' : '';
+    }
   }
 
   function applyBackground() {
@@ -180,6 +241,8 @@
     pendingTheme = settings.theme || 'night';
     pendingBg = null;
     applyTheme(pendingTheme);
+    applyTypeface(settings.typeface || 'kai');
+    markTypefaceSupport();
     el('brand-name').textContent = settings.systemName || '夜读';
     el('brand-sub').textContent = settings.subtitle || '我的书房';
     document.title = (settings.systemName || '夜读') + ' · ' + (settings.subtitle || '我的书房');
@@ -224,6 +287,7 @@
       systemName: el('set-name').value,
       subtitle: el('set-subtitle').value,
       theme: pendingTheme,
+      typeface: pendingTypeface,
       folders: folders.slice(),
       scan: {
         onStart: el('scan-on-start').checked,
@@ -327,6 +391,10 @@
       pendingTheme = btn.dataset.theme;
       applyTheme(pendingTheme);
     });
+  });
+
+  Array.prototype.forEach.call(document.querySelectorAll('.type-card'), function (btn) {
+    btn.addEventListener('click', function () { applyTypeface(btn.dataset.typeface); });
   });
 
   Array.prototype.forEach.call(document.querySelectorAll('.mode-card'), function (btn) {

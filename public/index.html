@@ -111,13 +111,16 @@
           <button type="button" class="ghost-btn" id="batch-hide">隐藏</button>
           <button type="button" class="ghost-btn" id="batch-unhide">取消隐藏</button>
           <button type="button" class="ghost-btn" id="batch-series">加入丛书</button>
+          <button type="button" class="ghost-btn" id="batch-move">移动到丛书</button>
           <button type="button" class="ghost-btn" id="batch-exit">退出整理</button>
           <div class="series-picker" id="series-picker" hidden>
+            <p class="shelf-picker-hint" id="series-picker-hint"></p>
             <div class="shelf-picker-list" id="series-picker-list"></div>
-            <div class="shelf-picker-new">
+            <div class="shelf-picker-new" id="series-picker-new">
               <input id="series-new-name" type="text" maxlength="40" placeholder="新丛书名，比如：西游记" aria-label="新丛书名称">
               <button type="button" class="ghost-btn" id="series-new-btn">新建并加入</button>
             </div>
+            <p class="shelf-picker-hint is-warn" id="series-new-hint" hidden></p>
           </div>
         </div>
 
@@ -224,6 +227,33 @@
           <button type="button" class="theme-card" data-theme="paper" role="radio" aria-checked="false"><span class="swatch"><i style="background:#EFE9DC"></i><i style="background:#8A5A1F"></i></span>纸笺</button>
           <button type="button" class="theme-card" data-theme="ink" role="radio" aria-checked="false"><span class="swatch"><i style="background:#07090B"></i><i style="background:#D9C08A"></i></span>墨影</button>
           <button type="button" class="theme-card" data-theme="tide" role="radio" aria-checked="false"><span class="swatch"><i style="background:#071A1B"></i><i style="background:#6ED0B6"></i></span>青屿</button>
+        </div>
+      </section>
+
+      <section class="setting-group">
+        <div class="group-head"><h3>字体风格</h3><span class="hint-inline" id="typeface-note"></span></div>
+        <p class="hint">和上面的配色主题各管一路，可以随意搭配。四套都只用系统自带字体，不联网、不额外下载；本机缺某个字体时会自动退回相近的一种，卡片下方会标出来。</p>
+        <div class="type-grid" id="type-grid" role="radiogroup" aria-label="字体风格">
+          <button type="button" class="type-card" data-typeface="kai" role="radio" aria-checked="true">
+            <span class="type-sample type-s-kai">夜读</span>
+            <span class="type-body"><strong>楷书通排</strong><em>书名、标题、分组名都用楷体，像一册手抄本。</em></span>
+            <span class="type-warn" hidden></span>
+          </button>
+          <button type="button" class="type-card" data-typeface="song" role="radio" aria-checked="false">
+            <span class="type-sample type-s-song">夜读</span>
+            <span class="type-body"><strong>宋体书卷</strong><em>传统书籍排法，书名回到宋体，字距拉开。</em></span>
+            <span class="type-warn" hidden></span>
+          </button>
+          <button type="button" class="type-card" data-typeface="sans" role="radio" aria-checked="false">
+            <span class="type-sample type-s-sans">夜读</span>
+            <span class="type-body"><strong>黑体骨架</strong><em>最稳最显眼，任何设备都不跑版，书卷气少些。</em></span>
+            <span class="type-warn" hidden></span>
+          </button>
+          <button type="button" class="type-card" data-typeface="li" role="radio" aria-checked="false">
+            <span class="type-sample type-s-li">夜读</span>
+            <span class="type-body"><strong>隶书骨架</strong><em>品牌与分组名走隶书，书名仍是宋体。</em></span>
+            <span class="type-warn" hidden></span>
+          </button>
         </div>
       </section>
 
