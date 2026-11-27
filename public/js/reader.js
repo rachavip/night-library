@@ -614,6 +614,14 @@
     return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable === true;
   }
 
+  // The reader opens in its own tab so music on the shelf keeps playing.
+  function leaveReader() {
+    if (window.opener || history.length > 1) window.close();
+    else location.href = '/';
+  }
+  var backBtn = document.getElementById('reader-back');
+  if (backBtn) backBtn.addEventListener('click', leaveReader);
+
   function onKeyDown(e) {
     if (typable(e.target)) return;
     if (!engine) return;
@@ -621,7 +629,7 @@
     else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); engine.prev(); }
     else if (e.key === 'Home') { e.preventDefault(); engine.seek(0); }
     else if (e.key === 'End') { e.preventDefault(); engine.seek(1); }
-    else if (e.key === 'Escape') location.href = '/';
+    else if (e.key === 'Escape') leaveReader();
   }
 
   /* ---------------- mouse wheel paging ---------------- */

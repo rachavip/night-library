@@ -44,7 +44,7 @@ button { cursor: pointer; }
   border-bottom: 1px solid var(--line-c);
   background: var(--bg);
 }
-.back { color: var(--muted); font-size: 13px; white-space: nowrap; transition: color .18s var(--ease); }
+.back { padding: 0; color: var(--muted); background: transparent; border: 0; font-size: 13px; white-space: nowrap; transition: color .18s var(--ease); }
 .back:hover { color: var(--accent); }
 .book-meta { min-width: 0; text-align: center; }
 .book-meta h1 {

@@ -10,6 +10,8 @@
   var artistEl = document.getElementById('player-artist');
   var playBtn = document.getElementById('player-play');
   var toggle = document.getElementById('music-toggle');
+  var prevBtn = document.getElementById('music-prev');
+  var nextBtn = document.getElementById('music-next');
   var volume = document.getElementById('player-volume');
   var panel = document.getElementById('music-panel');
   var frame = document.getElementById('music-frame');
@@ -276,14 +278,23 @@
     probeAndLoad(0);
   }
 
+  // The transport buttons cannot drive AnyListen - it is a separate site with
+  // no control API. They open the panel and hand focus to the iframe so the
+  // keyboard (space / arrows) works inside the real player.
+  function focusPlayer() {
+    try { frame.focus(); } catch (e) { /* cross-origin focus is best-effort */ }
+  }
+
   function openPanel() {
     if (mode !== 'embed') return;
     panel.classList.add('is-open');
     panel.removeAttribute('inert');
     panel.setAttribute('aria-hidden', 'false');
     toggle.setAttribute('aria-pressed', 'true');
+    toggle.textContent = '❚❚';
     open = true;
     if (state === 'idle' || state === 'error' || state === 'timeout') loadCurrent();
+    setTimeout(focusPlayer, 400);
   }
 
   function closePanel() {
@@ -292,6 +303,7 @@
     panel.setAttribute('inert', '');
     panel.setAttribute('aria-hidden', 'true');
     toggle.setAttribute('aria-pressed', 'false');
+    toggle.textContent = '▶';
     open = false;
     // The iframe stays alive so music keeps playing while browsing books.
   }
@@ -319,6 +331,21 @@
   }
 
   /* ---------- events ---------- */
+  // Prev / next focus the embedded player so its own keys can be used. They
+  // never fake a track change - that would be a button lying to the user.
+  function focusOrOpen() {
+    if (mode === 'embed') {
+      if (!open) openPanel();
+      else focusPlayer();
+    } else if (player.hidden) {
+      loadRandom().then(function () {
+        toggle.setAttribute('aria-pressed', String(!player.hidden));
+      });
+    }
+  }
+  if (prevBtn) prevBtn.addEventListener('click', focusOrOpen);
+  if (nextBtn) nextBtn.addEventListener('click', focusOrOpen);
+
   toggle.addEventListener('click', function () {
     if (mode === 'embed') {
       if (open) closePanel(); else openPanel();
@@ -371,9 +398,14 @@
       configured = Boolean(musicUrl);
       if (cfg.volume != null) setVolume(cfg.volume);
 
-      toggle.title = mode === 'embed' ? '打开音乐'
+      // AnyListen keeps its own login. Say so on the control itself: without
+      // a prior login the embedded page shows a password box instead of music.
+      toggle.title = mode === 'embed'
+        ? '打开音乐（播放器需提前登录一次账号）'
         : (configured ? '随机播放音乐' : '随机播放音乐（先在设置里配置服务）');
       toggle.setAttribute('aria-label', toggle.title);
+      if (prevBtn) prevBtn.title = '聚焦播放器切上一曲（需提前登录 AnyListen）';
+      if (nextBtn) nextBtn.title = '聚焦播放器切下一曲（需提前登录 AnyListen）';
       renderServiceSelect();
 
       if (mode === 'embed') {

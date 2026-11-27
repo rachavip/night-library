@@ -76,7 +76,10 @@
 
   function card(book) {
     var percent = pct(book);
+    // Open in a new tab so an embedded music player on the shelf keeps
+    // playing while the reader is open.
     var href = '/reader?id=' + encodeURIComponent(book.id);
+    var target = ' target="_blank" rel="noopener"';
     var cover = '<span class="cover"><img src="' + coverUrl(book) + '" alt="" loading="lazy">' +
       '<span class="format-tag">' + esc(book.format.toUpperCase()) + '</span>' +
       '<span class="cover-more" role="button" tabindex="0" data-id="' + esc(book.id) +
@@ -87,13 +90,13 @@
 
     if (state.view === 'list') {
       var mark = book.status === 'finished' ? '读完' : (percent ? percent + '%' : '未读');
-      return '<a class="book" href="' + href + '" aria-label="阅读《' + esc(book.title) + '》">' +
+      return '<a class="book" href="' + href + '"' + target + ' aria-label="阅读《' + esc(book.title) + '》">' +
         cover + title + author +
         '<span class="list-format">' + esc(book.format.toUpperCase()) + '</span>' +
         '<span class="list-progress">' + mark + '</span>' +
         '</a>';
     }
-    return '<a class="book" href="' + href + '" aria-label="阅读《' + esc(book.title) + '》">' +
+    return '<a class="book" href="' + href + '"' + target + ' aria-label="阅读《' + esc(book.title) + '》">' +
       cover + title + author + progress + '</a>';
   }
 
@@ -173,6 +176,8 @@
       var main = books[0];
       continueBox.hidden = false;
       continueMain.href = '/reader?id=' + encodeURIComponent(main.id);
+      continueMain.target = '_blank';
+      continueMain.rel = 'noopener';
       continueImg.src = coverUrl(main);
       continueImg.alt = '《' + (main.title || '未命名') + '》封面';
       continueTitle.textContent = main.title || '未命名';
@@ -616,7 +621,7 @@
 
   sheetNotes.addEventListener('click', function () {
     if (!sheetBook) return;
-    location.href = '/reader?id=' + encodeURIComponent(sheetBook.id) + '&panel=notes';
+    window.open('/reader?id=' + encodeURIComponent(sheetBook.id) + '&panel=notes', '_blank', 'noopener');
   });
 
   async function rescanOne() {
@@ -666,7 +671,7 @@
   sheetClose.addEventListener('click', closeSheet);
   sheetRescan.addEventListener('click', rescanOne);
   sheetOpen.addEventListener('click', function () {
-    if (sheetBook) location.href = '/reader?id=' + encodeURIComponent(sheetBook.id);
+    if (sheetBook) window.open('/reader?id=' + encodeURIComponent(sheetBook.id), '_blank', 'noopener');
   });
   document.addEventListener('keydown', function (e) {
     if (e.key !== 'Escape') return;

@@ -44,7 +44,11 @@
         <button type="button" data-view="list" aria-pressed="false">列表</button>
       </div>
       <button class="ghost-btn" id="rescan">刮削</button>
-      <button class="ghost-btn icon-btn" id="music-toggle" title="打开音乐" aria-label="打开音乐" aria-pressed="false">♫</button>
+      <div class="mini-player" role="group" aria-label="音乐控制">
+        <button type="button" class="mini-player-btn" id="music-prev" title="聚焦播放器（上一曲请用播放器里的按钮）" aria-label="上一曲（聚焦播放器）">⏮</button>
+        <button type="button" class="mini-player-btn is-primary" id="music-toggle" title="打开音乐" aria-label="打开音乐" aria-pressed="false">▶</button>
+        <button type="button" class="mini-player-btn" id="music-next" title="聚焦播放器（下一曲请用播放器里的按钮）" aria-label="下一曲（聚焦播放器）">⏭</button>
+      </div>
       <button class="ghost-btn icon-btn" id="settings-toggle" title="设置" aria-label="打开设置">⚙</button>
     </div>
   </header>
