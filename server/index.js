@@ -174,6 +174,8 @@ function consolidateShelves() {
       if (set.size !== hand.bookIds.length) {
         hand.bookIds = Array.from(set);
         hand.updatedAt = new Date().toISOString();
+        // 收编了自动组的书，这个手动组就不再是空的了。
+        delete hand.emptySince;
       }
       silenced.push(shelf.keyword);
       console.log(`[series] 「${shelf.name}」自动组并入同名丛书，共 ${hand.bookIds.length} 本`);
@@ -227,6 +229,8 @@ function decorate(book, index) {
 
 // 自动丛书完全由书名推出来，所以索引一变就重算。800 册书名扫一遍只要几毫秒，
 // 不值得为它做增量。
+// 用整柜书名来算，不用管隐藏：隐藏只作用在「藏书」那条线上，收起的书照样属于
+// 它所在的丛书，组名和册数都不该因为收起而变。
 function refreshSeries() {
   autoShelves = series.build(currentIndex.books, seriesState);
 }
@@ -240,7 +244,19 @@ function syncShelves() {
   const hiddenRemoved = hiddenStore.prune(hiddenState, valid);
   if (hiddenRemoved) console.log(`[hidden] dropped ${hiddenRemoved} stale book id(s)`);
   refreshSeries();
+  sweepEmptyShelves();
   return { shelves: removed, hidden: hiddenRemoved };
+}
+
+// 0 册的分组不该占着左栏：手动组给一小时宽限（见 collections.EMPTY_GRACE_MS）
+// ——先建组再挑书是正常用法，建完立刻被删才是真的烦；自动组算不出书来就不生成。
+// 启动、扫描后、以及每十分钟各扫一次。
+function sweepEmptyShelves() {
+  const dropped = collections.dropEmpty(shelvesState);
+  if (!dropped) return 0;
+  console.log(`[series] 清掉 ${dropped} 个空丛书（0 册超过 1 小时）`);
+  collections.save(cfg, shelvesState);
+  return dropped;
 }
 
 // Resolve a book's real file. Each book remembers the folder it came from,
@@ -579,6 +595,9 @@ app.get('/api/stats', (req, res) => {
     transform: transformer.available(),
     booksDir: cfg.booksDir,
     folders: currentIndex.folders || [],
+    // 左栏有几条丛书。页面每 10 秒轮询这个数，对不上就重新拉一次分组——
+    // 空组是后台定时清掉的，没有这个信号，清完了左栏还挂着「0」。
+    shelfCount: allShelves().length,
     scanning: scanning,
     scanOnStart: scanOnStart,
     autoScanMinutes: scanIntervalMinutes,
@@ -592,10 +611,15 @@ app.get('/api/books', (req, res) => {
   const { sort = 'guess', order = 'desc', q = '', format = '', status = '', collection = '',
     hidden = '', limit = '' } = req.query;
   let books = currentIndex.books;
+  // 隐藏只管「藏书」这一条线，管不到丛书：点开一个丛书看到的就是这一组的全部书，
+  // 收起的也在里面，否则组名旁边写 12、点开只有 0 本，那个数字就成了假账。
+  const inShelf = Boolean(collection);
   // Default is the shelf people expect: what they have not put away.
   // `hidden=only` is the "hidden" tab, `hidden=all` is the honest total.
-  if (hidden === 'only') books = books.filter(b => hiddenStore.has(hiddenState, b.id));
-  else if (hidden !== 'all') books = books.filter(b => !hiddenStore.has(hiddenState, b.id));
+  if (!inShelf) {
+    if (hidden === 'only') books = books.filter(b => hiddenStore.has(hiddenState, b.id));
+    else if (hidden !== 'all') books = books.filter(b => !hiddenStore.has(hiddenState, b.id));
+  }
   if (format) books = books.filter(b => b.format === format);
   if (collection) {
     const found = allShelves().find(c => c.id === collection);
@@ -666,6 +690,8 @@ app.post('/api/books/hide', async (req, res) => {
   const want = body.hidden !== false;
   const changed = hiddenStore.setMany(hiddenState, ids, want);
   if (changed) await hiddenStore.save(cfg, hiddenState);
+  // 只改了「藏书」那条线的可见性：丛书的成员、册数、空置判定都不受影响，
+  // 所以这里不需要重算自动组，也不用碰空组计时。
   res.json({ ok: true, changed, hiddenCount: hiddenStore.count(hiddenState) });
 });
 
@@ -963,11 +989,10 @@ app.post('/api/taste/reset', async (req, res) => {
   res.json({ ok: true, removed });
 });
 
-// 分组后面标的册数同样要等于点进去的册数：隐藏的书在书架上不显示，这里也不数。
+// 分组后面标的册数：这一组有几本书就写几本，收起的也算——隐藏不作用在丛书上。
+// 点开看到的册数由 /api/books 保证一致（collection 存在时不过滤隐藏）。
 function shownCount(bookIds) {
-  let n = 0;
-  (bookIds || []).forEach(id => { if (!hiddenStore.has(hiddenState, id)) n++; });
-  return n;
+  return (bookIds || []).length;
 }
 
 /* ---------- shelves: hand-built, plus the ones titles suggest ---------- */
@@ -1173,6 +1198,8 @@ app.post('/api/collections/merge', async (req, res) => {
       moved = from.bookIds.length;
       into.bookIds = Array.from(set);
       into.updatedAt = new Date().toISOString();
+      // 接手了书，就别再记着「空置起点」了。
+      delete into.emptySince;
       series.mute(seriesState, from.keyword, true, 'merged');
     } else {
       const folded = collections.merge(shelvesState, from.id, into.id);
@@ -1481,6 +1508,11 @@ async function start() {
   refreshSeries();
   // 老数据里可能已经躺着两条同名的分组，启动时先收成一条再对外服务。
   await tidyShelves();
+  // 空了一小时以上的手动组顺手清掉；之后每 10 分钟扫一次，不然没人动过
+  // 数据就永远等不到下一次保存，那个「0 册」会一直挂在左栏。
+  sweepEmptyShelves();
+  const emptyTimer = setInterval(sweepEmptyShelves, 10 * 60 * 1000);
+  if (emptyTimer.unref) emptyTimer.unref();
 
   applyScanSettings();
 

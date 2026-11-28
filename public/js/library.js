@@ -118,11 +118,14 @@
     var href = '/reader?id=' + encodeURIComponent(book.id);
     var target = ' target="_blank" rel="noopener"';
     var picked = state.selected.has(book.id);
-    var cls = 'book' + (picked ? ' is-picked' : '');
+    // 隐藏只管「藏书」那条线：点开一个丛书时，收起的书也会出现在这里，
+    // 所以要有个记号，免得人以为「我不是把它收起来了吗」。
+    var cls = 'book' + (picked ? ' is-picked' : '') + (book.hidden ? ' is-put-away' : '');
     var dataId = ' data-id="' + esc(book.id) + '"';
     var cover = '<span class="cover"><span class="pick" aria-hidden="true">✓</span>' +
       '<img src="' + coverUrl(book) + '" alt="" loading="lazy" draggable="false">' +
       '<span class="format-tag">' + esc(book.format.toUpperCase()) + '</span>' +
+      (book.hidden ? '<span class="putaway-tag">已收起</span>' : '') +
       '<span class="cover-more" role="button" tabindex="0" data-id="' + esc(book.id) +
       '" aria-label="查看《' + esc(book.title) + '》的详情与单独刮削">⋯</span></span>';
     var title = '<span class="book-title">' + esc(book.title || '未命名') + '</span>';
@@ -1670,9 +1673,7 @@
       var bits = ['上次整理 ' + when];
       if (stats.scanning) bits.push('正在整理…');
       var last = stats.lastScan;
-      if (last && last.reused > 0) {
-        bits.push('跳过 ' + last.reused + ' 册未变化');
-      } else if (last && last.scraped > 0) {
+      if (last && last.scraped > 0) {
         bits.push('本次刮削 ' + last.scraped + ' 册 · ' + span(last.durationMs));
       }
       if (stats.autoScanMinutes) {
@@ -1697,6 +1698,10 @@
     if (document.hidden) return;
     try {
       var stats = await api('/api/stats');
+      // 空丛书由服务端定时清掉，没有新扫描也一样要跟上：条数对不上就重拉左栏。
+      if (typeof stats.shelfCount === 'number' && stats.shelfCount !== shelves.length) {
+        await loadShelves();
+      }
       var scanning = Boolean(stats.scanning);
       if (scanning !== lastScanning) {
         await renderStats();
@@ -1726,7 +1731,6 @@
       var result = await api('/api/rescan', { method: 'POST' });
       var st = result.stats || {};
       var msg = '已整理 ' + result.count + ' 册';
-      if (st.reused > 0) msg += '，跳过 ' + st.reused + ' 册未变化';
       if (st.durationMs !== undefined) msg += ' · ' + span(st.durationMs);
       toast(msg);
       await renderStats();

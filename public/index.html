@@ -60,12 +60,21 @@
     <section class="intro">
       <h1>藏书 <span id="stat-count">—</span> 册</h1>
       <p id="stat-meta">正在整理书房…</p>
-      <p class="intro-features" id="intro-features">电子书朗读 · 四种格式转换 · 丛书整理 · 进度与笔记全留在本地</p>
     </section>
 
     <div class="layout" id="layout">
       <!-- left rail: navigation first (always there), reading history under it -->
       <aside class="rail" id="rail" aria-label="书房导航">
+        <!-- 留言板入口放在最上面：左栏一旦比屏幕高，最底部的东西要滚到底才看得见 -->
+        <button type="button" class="guestbook-cta" id="guestbook-open">
+          <span class="guestbook-cta-icon" aria-hidden="true">✉</span>
+          <span class="guestbook-cta-body">
+            <strong>留言板</strong>
+            <em>有建议或想说的话，写在这里</em>
+          </span>
+          <span class="guestbook-cta-go" aria-hidden="true">›</span>
+        </button>
+
         <nav class="rail-nav" aria-label="藏书分类">
           <section class="rail-group">
             <div class="rail-group-head">
@@ -104,9 +113,6 @@
         </section>
 
         <p class="reading-line" id="reading-line" hidden></p>
-        <button type="button" class="reading-line guestbook-line" id="guestbook-open">
-          <span>留言板</span><em>写两句 ›</em>
-        </button>
       </aside>
 
       <div class="shelf-col">

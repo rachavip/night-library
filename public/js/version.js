@@ -130,22 +130,10 @@
     if (e.key === 'Escape' && !pop.hidden) { setOpen(false); badge.focus(); }
   });
 
-  // 首页简介只放本版亮点，完整升级说明点版本徽标看。
-  function showHighlights(v) {
-    var node = document.getElementById('intro-features');
-    if (!node) return;
-    var list = (v && v.highlights) || [];
-    node.textContent = list.length
-      ? list.join(' · ')
-      : '电子书朗读 · 四种格式转换 · 丛书整理 · 进度与笔记全留在本地';
-  }
-
   fetch('/api/version').then(function (r) { return r.json(); }).then(function (v) {
     render(v);
-    showHighlights(v);
     setTimeout(autoCheck, 600);
   }).catch(function () {
     render({ version: '0.0', date: '', notes: [], highlights: [] });
-    showHighlights(null);
   });
 })();

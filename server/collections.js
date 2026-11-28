@@ -13,6 +13,10 @@ const path = require('path');
 
 const MAX_NAME = 40;
 const MAX_SHELVES = 60;
+// 手动建的组允许暂时是空的（先建组、再挑书放进去），但空着超过一小时就说明
+// 这组没人要了：左栏挂一个「燕麦 0」既点不出东西，也分不清是坏了还是没用。
+// 一小时从「最后一次变动」算起——空掉那一刻 updatedAt 会被刷新。
+const EMPTY_GRACE_MS = 60 * 60 * 1000;
 
 function emptyState() {
   return { collections: [] };
@@ -52,7 +56,10 @@ function cleanState(raw) {
       name,
       bookIds: Array.from(new Set(ids)),
       createdAt: item.createdAt || new Date().toISOString(),
-      updatedAt: item.updatedAt || item.createdAt || new Date().toISOString()
+      updatedAt: item.updatedAt || item.createdAt || new Date().toISOString(),
+      // 「这组从什么时候开始一本都看不见」的起点。必须存下来，否则每次重启
+      // 都重新计一小时，空组就永远删不掉。
+      emptySince: item.emptySince || null
     });
   });
   return state;
@@ -68,6 +75,9 @@ async function load(cfg) {
 
 let writeChain = Promise.resolve();
 function save(cfg, state) {
+  // 落盘前顺手清掉已经空了一小时以上的组：所有写入口都会经过这里，
+  // 所以不需要在每个路由里各写一遍。
+  dropEmpty(state);
   const file = path.join(cfg.dataDir, 'collections.json');
   const tmp = file + '.tmp';
   const payload = JSON.stringify(cleanState(state), null, 2);
@@ -141,6 +151,9 @@ function members(state, id, changes) {
   add.forEach(v => { if (v) set.add(v); });
   item.bookIds = Array.from(set);
   item.updatedAt = new Date().toISOString();
+  // 又往里放书了，就别记着「从某时起是空的」了——留着会让下一次变空时
+  // 拿着一个很老的起点，一秒钟都还没等就被清掉。
+  if (add.length) delete item.emptySince;
   return item;
 }
 
@@ -167,6 +180,7 @@ function moveMembers(state, id, ids) {
   pick.forEach(v => set.add(v));
   target.bookIds = Array.from(set);
   target.updatedAt = now;
+  if (target.bookIds.length > before) delete target.emptySince;
   return { item: target, removed, added: target.bookIds.length - before };
 }
 
@@ -177,9 +191,11 @@ function merge(state, fromId, intoId) {
   const into = state.collections.find(c => c.id === intoId);
   if (!from || !into || from.id === into.id) return null;
   const set = new Set(into.bookIds);
+  const before = set.size;
   from.bookIds.forEach(id => set.add(id));
   into.bookIds = Array.from(set);
   into.updatedAt = new Date().toISOString();
+  if (into.bookIds.length > before) delete into.emptySince;
   const moved = from.bookIds.length;
   state.collections.splice(state.collections.indexOf(from), 1);
   return { item: into, moved };
@@ -193,9 +209,37 @@ function prune(state, validIds) {
   state.collections.forEach(item => {
     const kept = item.bookIds.filter(id => valid.has(id));
     removed += item.bookIds.length - kept.length;
-    item.bookIds = kept;
+    if (kept.length !== item.bookIds.length) {
+      item.bookIds = kept;
+      // 变空的那一刻才算「空置起点」，否则一个两周前建、今天刚被删空的组
+      // 会在下一次保存时立刻消失，读者连发生了什么都来不及看见。
+      item.updatedAt = new Date().toISOString();
+    }
   });
   return removed;
+}
+
+// 一本都没有的组不要留着。注意判定只认成员表，不看隐藏：隐藏是「藏书」那条线
+// 上的事，收起的书仍然算这个组的，组名和册数都不该因为收起而消失。
+// 宽限期从「发现它空了」那一刻算（见 EMPTY_GRACE_MS），期间往里放书就活过来。
+// 返回删掉的个数，调用方据此决定要不要落盘。
+function dropEmpty(state, now) {
+  const t = now == null ? Date.now() : now;
+  const before = state.collections.length;
+  state.collections = state.collections.filter(item => {
+    if (item.bookIds.length) {
+      delete item.emptySince;
+      return true;
+    }
+    if (!item.emptySince) {
+      // 从「发现它空了」这一刻开始计时，不去追溯创建时间：追了反而会让一个
+      // 上周建、今天才被清空的组当场消失。起点存在文件里，重启不会重新计时。
+      item.emptySince = new Date(t).toISOString();
+    }
+    const since = Date.parse(item.emptySince) || t;
+    return t - since < EMPTY_GRACE_MS;
+  });
+  return before - state.collections.length;
 }
 
 module.exports = {
@@ -211,5 +255,7 @@ module.exports = {
   findByName,
   nameKey,
   prune,
+  dropEmpty,
+  EMPTY_GRACE_MS,
   cleanName
 };
