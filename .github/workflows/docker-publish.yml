@@ -6,6 +6,10 @@ on:
   push:
     branches: [main]
     tags: ['v*']
+    # 留言板把每条留言写成 messages/*.md 并推到 main。没有这行的话，
+    # 每留一条言都会白白触发一次镜像重建。tag push 不受 paths 过滤影响。
+    paths-ignore:
+      - 'messages/**'
   workflow_dispatch:
 
 env:

@@ -71,11 +71,23 @@
   --amber-soft: rgba(110, 208, 182, 0.13);
 }
 
-/* Background image scrim, tuned per theme so type stays readable. */
-:root { --scrim: rgba(11, 18, 28, 0.62); }
-:root[data-app-theme="paper"] { --scrim: rgba(239, 233, 220, 0.70); }
+/* --scrim follows the dim slider. The text halo is user-selectable in the
+ * settings drawer: soft (default), crisp outline, or none. Light themes need
+ * a light halo, so only the halo colours are defined per theme here. */
+:root { --scrim: rgba(11, 18, 28, 0.62); --halo-1: rgba(0, 0, 0, .95); --halo-2: rgba(0, 0, 0, .8); }
+:root[data-app-theme="paper"] { --scrim: rgba(239, 233, 220, 0.70); --halo-1: rgba(255, 255, 255, .95); --halo-2: rgba(255, 255, 255, .8); }
 :root[data-app-theme="ink"] { --scrim: rgba(7, 9, 11, 0.68); }
 :root[data-app-theme="tide"] { --scrim: rgba(7, 26, 27, 0.66); }
+
+:root, :root[data-text-effect="soft"] {
+  --text-halo: 0 1px 2px var(--halo-1), 0 0 4px var(--halo-2);
+}
+:root[data-text-effect="crisp"] {
+  --text-halo: -1px -1px 0 var(--halo-1), 1px -1px 0 var(--halo-1),
+               -1px 1px 0 var(--halo-1), 1px 1px 0 var(--halo-1),
+               0 2px 5px var(--halo-2);
+}
+:root[data-text-effect="off"] { --text-halo: none; }
 
 /* ---- 字体风格。Applied via <html data-typeface="..."> ----
  * 默认（kai 楷书通排）写在 :root 里，下面三个是另外三套。

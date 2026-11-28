@@ -22,6 +22,10 @@ const DEFAULTS = {
   subtitle: '我的书房',
   theme: 'night',
   typeface: 'kai',
+  textEffect: 'soft',
+  // GitHub personal access token for the guestbook. Stored only in
+  // DATA_DIR/settings.json, never in the image or in the repository.
+  guestbookToken: '',
   folders: [],
   // focus 是背景图的取景位置，百分比（0–100，50 即居中）。封面铺满整页时，
   // 比例不一致的图一定会被裁，这个值决定留下哪一块。
@@ -102,6 +106,7 @@ const THEMES = new Set(['night', 'paper', 'ink', 'tide']);
 // 字体风格与配色主题正交：同一套配色可以配四种排版。值对应 tokens.css 里的
 // :root[data-typeface="..."]，默认 kai 直接写在 :root 上。
 const TYPEFACES = new Set(['kai', 'song', 'sans', 'li']);
+const TEXT_EFFECTS = new Set(['soft', 'crisp', 'off']);
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -178,6 +183,8 @@ async function load(cfg) {
     out.subtitle = cleanString(raw.subtitle, 60, DEFAULTS.subtitle);
     if (THEMES.has(raw.theme)) out.theme = raw.theme;
     if (TYPEFACES.has(raw.typeface)) out.typeface = raw.typeface;
+    if (TEXT_EFFECTS.has(raw.textEffect)) out.textEffect = raw.textEffect;
+    out.guestbookToken = cleanString(raw.guestbookToken, 200, '');
     const folders = cleanFolders(raw.folders);
     out.folders = (folders !== null && folders.length) ? folders : [cfg.booksDir];
     const bg = raw.background || {};
@@ -228,6 +235,11 @@ function merge(current, input) {
   }
   if (THEMES.has(src.theme)) out.theme = src.theme;
   if (TYPEFACES.has(src.typeface)) out.typeface = src.typeface;
+  if (TEXT_EFFECTS.has(src.textEffect)) out.textEffect = src.textEffect;
+  // "********" means the browser kept the masked token; don't overwrite it.
+  if (Object.prototype.hasOwnProperty.call(src, 'guestbookToken') && src.guestbookToken !== '********') {
+    out.guestbookToken = cleanString(src.guestbookToken, 200, '');
+  }
   const folders = cleanFolders(src.folders);
   if (folders !== null) out.folders = folders;
 
@@ -268,6 +280,7 @@ function merge(current, input) {
 function forBrowser(settings) {
   const out = clone(settings);
   if (out.music.password) out.music.password = '********';
+  if (out.guestbookToken) out.guestbookToken = '********';
   return out;
 }
 

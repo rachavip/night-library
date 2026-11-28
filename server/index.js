@@ -12,6 +12,41 @@ const hiddenStore = require('./hidden');
 const notes = require('./notes');
 const converter = require('./convert');
 const transformer = require('./transform');
+const guestbook = require('./guestbook');
+
+// Conversion progress is held in memory only. A job lasts seconds, so there
+// is nothing worth persisting; after five minutes a stale entry is dropped.
+const transformProgress = new Map();
+const PROGRESS_TTL = 5 * 60 * 1000;
+
+function transformKey(id, target) {
+  return String(id) + '|' + String(target);
+}
+
+function reportTransform(id, target, percent, stage) {
+  const key = transformKey(id, target);
+  const now = Date.now();
+  const pct = Math.max(0, Math.min(100, Math.round(Number(percent) || 0)));
+  const label = String(stage || '');
+  const prev = transformProgress.get(key);
+  // A 600-page PDF reports once per page; don't churn objects for a change
+  // too small to see on a progress bar.
+  if (prev && prev.percent === pct && prev.stage === label) {
+    prev.updatedAt = now;
+    return;
+  }
+  transformProgress.set(key, {
+    percent: pct,
+    stage: label,
+    startedAt: prev ? prev.startedAt : now,
+    updatedAt: now
+  });
+  if (transformProgress.size > 500) {
+    for (const [k, v] of transformProgress) {
+      if (now - v.updatedAt > PROGRESS_TTL) transformProgress.delete(k);
+    }
+  }
+}
 const settingsStore = require('./settings');
 const music = require('./music');
 const musicProxy = require('./musicproxy');
@@ -158,7 +193,7 @@ function consolidateShelves() {
   });
 
   silenced.forEach(keyword => {
-    if (series.mute(seriesState, keyword, true)) changed = true;
+    if (series.mute(seriesState, keyword, true, 'merged')) changed = true;
   });
   return changed;
 }
@@ -302,6 +337,32 @@ app.put('/api/settings', async (req, res) => {
     res.json(settingsStore.forBrowser(settings));
   } catch (e) {
     res.status(500).json({ error: '保存设置失败：' + e.message });
+  }
+});
+
+/* ---------- guestbook ---------- */
+// The captcha and per-IP limit live in memory: no database, and a container
+// restart simply clears them. Messages themselves persist in data/guestbook.json.
+app.get('/api/guestbook/captcha', (req, res) => {
+  res.json(guestbook.captcha());
+});
+
+app.get('/api/guestbook', async (req, res) => {
+  try {
+    const entries = await guestbook.readEntries(cfg);
+    res.json({ entries: guestbook.forBrowser(entries), configured: Boolean(settings.guestbookToken) });
+  } catch (e) {
+    res.status(500).json({ error: '读取留言失败：' + e.message });
+  }
+});
+
+app.post('/api/guestbook', async (req, res) => {
+  try {
+    const ip = req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
+    const r = await guestbook.submit(cfg, settings, req.body, ip);
+    res.json({ ok: true, entry: r.entry, syncError: r.syncError });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
   }
 });
 
@@ -742,10 +803,31 @@ app.get('/api/book/:id/file', (req, res) => {
 // written back into the library: storing the result would add a duplicate
 // record on the next scan, and the point here is "I need this book as a PDF
 // for someone else", not "I want two copies on my shelf".
+// The download response is one blob, so it cannot stream progress. The sheet
+// polls this while the download request is in flight instead.
+app.get('/api/transform/progress', (req, res) => {
+  const key = transformKey(req.query.book, req.query.target);
+  const p = transformProgress.get(key);
+  if (!p) return res.json({ active: false });
+  const now = Date.now();
+  if (now - p.updatedAt > PROGRESS_TTL) {
+    transformProgress.delete(key);
+    return res.json({ active: false });
+  }
+  res.json({
+    active: p.percent < 100,
+    percent: p.percent,
+    stage: p.stage,
+    elapsedMs: now - p.startedAt
+  });
+});
+
 app.get('/api/book/:id/transform/:target', async (req, res) => {
   const book = findBook(req.params.id);
   if (!book) return res.status(404).json({ error: '没有找到这本书' });
-  const result = await transformer.transform(book, cfg, req.params.target);
+  const result = await transformer.transform(book, cfg, req.params.target, function (pct, stage) {
+    reportTransform(book.id, req.params.target, pct, stage);
+  });
   if (!result.ok) return res.status(result.status || 422).json({ error: result.error });
   res.download(result.file, result.name, err => {
     if (err && !res.headersSent) res.status(500).json({ error: '文件传输中断：' + err.message });
@@ -901,7 +983,9 @@ app.get('/api/collections', (req, res) => {
       createdAt: c.createdAt
     })),
     // Keywords the reader folded away, so the rail can offer a way back.
-    muted: seriesState.muted.slice()
+    muted: seriesState.muted.slice(),
+    // Empty until the reader actually drags a group; the rail sorts by name.
+    order: seriesState.order.slice()
   });
 });
 
@@ -912,6 +996,18 @@ app.post('/api/series/restore', async (req, res) => {
   // 放回来的自动组若与手动组同名，会立刻被再合并一次，左栏不会因此多出一条。
   await tidyShelves();
   res.json({ ok: true, collections: autoShelves.length });
+});
+
+// The rail shows groups in name order until somebody drags one. Only then is
+// an explicit order stored - keeping a default order in the file would stop
+// newly discovered auto groups from finding their alphabetical place.
+app.post('/api/series/order', async (req, res) => {
+  const ids = Array.isArray(req.body && req.body.ids)
+    ? req.body.ids.map(v => String(v || '')).filter(Boolean)
+    : [];
+  seriesState.order = Array.from(new Set(ids)).slice(0, 1000);
+  await series.save(cfg, seriesState);
+  res.json({ ok: true, order: seriesState.order });
 });
 
 // Adding books to a series, folding an auto group into a hand-held one, and
@@ -946,7 +1042,8 @@ function adoptAuto(keyword, rawName) {
   const item = collections.create(shelvesState, name);
   item.bookIds = shelf.bookIds.slice();
   item.updatedAt = new Date().toISOString();
-  series.mute(seriesState, keyword, true);
+  // 采纳成手动组是有意整理，不是"先收起、以后可能后悔"，别给它留恢复入口。
+  series.mute(seriesState, keyword, true, 'merged');
   return item;
 }
 
@@ -1076,7 +1173,7 @@ app.post('/api/collections/merge', async (req, res) => {
       moved = from.bookIds.length;
       into.bookIds = Array.from(set);
       into.updatedAt = new Date().toISOString();
-      series.mute(seriesState, from.keyword, true);
+      series.mute(seriesState, from.keyword, true, 'merged');
     } else {
       const folded = collections.merge(shelvesState, from.id, into.id);
       if (!folded) return res.status(404).json({ error: '没有找到要合并的分组' });

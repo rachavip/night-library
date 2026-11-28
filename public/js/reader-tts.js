@@ -52,6 +52,9 @@
   // Where the reader was when the queue was built. A change means somebody
   // flipped a page by hand.
   var lastLocation = '';
+  // Two clicks on "从这里读" in a row: only the newer one is allowed to take
+  // over the player after its async read() finishes.
+  var startSeq = 0;
 
   function toast(message) {
     if (typeof window.nightReaderToast === 'function') window.nightReaderToast(message);
@@ -136,6 +139,59 @@
       });
     });
     return out;
+  }
+
+  // 选区起点的定位。逐句 indexOf 有个隐蔽的坑：选区前 14 字经常跨过句号或
+  // PDF 文本层的断行，任何单句都不含这整段文字，于是旧实现回退到从头读。
+  // 改成把整页句子接成一条带下标的长串，找到位置后看它落在第几句。
+  function tidy(s) {
+    return String(s || '')
+      .replace(/[\s\u00a0\u200b-\u200f\ufeff]/g, '')
+      .replace(/[“”‘’"']/g, '')
+      .replace(/[，,、：:；;。！？!?…（）()【】\[\]《》〈〉]/g, '');
+  }
+
+  function locateSentence(queue, picked) {
+    var key = tidy(picked);
+    if (!key || !queue.length) return 0;
+
+    // offsets[i] = 第 i 句在拼接串里的 [起点, 终点)
+    var all = '';
+    var offsets = [];
+    for (var i = 0; i < queue.length; i++) {
+      var part = tidy(queue[i]);
+      offsets.push([all.length, all.length + part.length]);
+      all += part;
+    }
+
+    // 逐步放宽：整段选区、半句、几个字。短到 3 字还找不到就别猜了。
+    var lengths = [16, 12, 9, 6, 4];
+    for (var k = 0; k < lengths.length; k++) {
+      var needle = key.slice(0, lengths[k]);
+      if (needle.length < 3) break;
+      var at = all.indexOf(needle);
+      if (at < 0) continue;
+      for (var j = 0; j < offsets.length; j++) {
+        if (at >= offsets[j][0] && at < offsets[j][1]) return j;
+      }
+      // 位置正好落在句子接缝上，取后一句更接近读者点中的位置。
+      for (var m = 0; m < offsets.length; m++) {
+        if (at === offsets[m][1]) return Math.min(m + 1, queue.length - 1);
+      }
+    }
+
+    // 最后一层模糊回退：PDF 的文字层顺序偶尔和视觉顺序不一致，取与该段
+    // 开头重合字数最多的句子，总比一声不响地从头读好。
+    var head = key.slice(0, 8);
+    var best = 0;
+    var bestLen = 0;
+    for (var n = 0; n < queue.length; n++) {
+      var s = tidy(queue[n]);
+      var shared = 0;
+      while (shared < head.length && s.indexOf(head.slice(0, shared + 1)) >= 0) shared++;
+      if (shared > bestLen) { bestLen = shared; best = n; }
+    }
+    return bestLen >= 3 ? best : 0;
   }
 
   /* ---------------- music gives way ---------------- */
@@ -319,6 +375,16 @@
       toast('书还在打开，稍等一下再试');
       return;
     }
+
+    var seq = ++startSeq;
+    // 立刻打断上一句。不 cancel 的话浏览器会把新句子排在旧句子后面，
+    // 第二次点「从这里读」要等旧句念完才出声，看起来就像没反应。
+    if (synth) {
+      try { synth.cancel(); } catch (e) { /* ignore */ }
+    }
+    state.playing = false;
+    state.paused = false;
+
     if (!chineseVoices().length && (synth.getVoices() || []).length) {
       toast('系统里没有中文语音，先在系统的「语音」设置里装一个中文声音');
       return;
@@ -328,6 +394,7 @@
     // book instead of letting the reader wonder why nothing happens.
     if (!state.probed) {
       var hasText = await api.probe();
+      if (seq !== startSeq) return;
       state.probed = true;
       state.textBook = !!hasText;
       if (!hasText) {
@@ -340,14 +407,17 @@
     }
 
     var got = await api.read();
+    if (seq !== startSeq) return;
     // 封面、版权页、插图页在 PDF 里很常见，它们一行字都没有。默认从头读时
     // 往后翻几页找第一段真正有字的内容，而不是一点播放就报「这一页没有文字」。
     if (!fromText) {
       var tries = 0;
       while ((!got || !got.ok) && tries < 3 && api.canNext()) {
         await api.nextPage();
+        if (seq !== startSeq) return;
         tries++;
         got = await api.read();
+        if (seq !== startSeq) return;
       }
     }
     if (!got || !got.ok) {
@@ -360,19 +430,7 @@
       return;
     }
 
-    // 选中后朗读：找到包含选中文字的那一句。去掉空白再比，PDF 文本层的
-    // 换行和空格与屏幕上看到的不完全一致。
-    var at = 0;
-    var needle = String(fromText || '').replace(/\s+/g, '').slice(0, 14);
-    if (needle) {
-      for (var i = 0; i < queue.length; i++) {
-        if (queue[i].replace(/\s+/g, '').indexOf(needle) >= 0) {
-          at = i;
-          break;
-        }
-      }
-    }
-
+    var at = locateSentence(queue, fromText);
     state.queue = queue;
     state.index = at;
     state.skip = 0;
@@ -383,7 +441,11 @@
     hushMusic();
     noteLocation();
     syncBar();
-    speakCurrent(state.token);
+    // Chrome drops a speak() issued in the same tick as cancel().
+    var token = state.token;
+    setTimeout(function () {
+      if (seq === startSeq && token === state.token) speakCurrent(token);
+    }, 60);
   }
 
   function pause() {

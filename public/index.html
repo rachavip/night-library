@@ -12,7 +12,7 @@
   <div class="backdrop" id="backdrop" aria-hidden="true"></div>
 
   <header class="topbar">
-    <div class="brand"><img class="brand-logo" src="/logo-icon.png" alt="" aria-hidden="true"><span id="brand-name">夜读</span><span class="brand-sub" id="brand-sub">我的书房</span><button type="button" class="version-badge" id="version-badge" title="版本与更新" aria-label="查看版本与更新" aria-expanded="false">当前版本：…</button>
+    <div class="brand"><img class="brand-logo" src="/logo-icon.png" alt="" aria-hidden="true"><span id="brand-name"><span class="brand-first">夜</span><span class="brand-last">读</span></span><span class="brand-sub" id="brand-sub">我的书房</span><button type="button" class="version-badge" id="version-badge" title="版本与更新" aria-label="查看版本与更新" aria-expanded="false">当前版本：…</button>
       <div class="version-pop" id="version-pop" hidden>
         <div class="version-pop-head"><strong id="version-current">版本</strong><button type="button" class="icon-btn" id="version-close" aria-label="关闭版本信息">×</button></div>
         <p class="version-date" id="version-date"></p>
@@ -49,6 +49,10 @@
         <button type="button" class="mini-player-btn" id="music-next" title="聚焦播放器（下一曲请用播放器里的按钮）" aria-label="下一曲（聚焦播放器）">⏭</button>
       </div>
       <button class="ghost-btn icon-btn" id="settings-toggle" title="设置" aria-label="打开设置">⚙</button>
+      <a class="repo-link" href="https://github.com/rachavip/night-library" target="_blank" rel="noopener noreferrer" title="项目主页（GitHub）" aria-label="打开项目主页（GitHub）">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.73.5.5 5.73.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.56 0-.28-.01-1.02-.02-2-3.2.7-3.88-1.54-3.88-1.54-.52-1.33-1.28-1.68-1.28-1.68-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.23-1.28-5.23-5.69 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.79 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.12 3.05.74.81 1.18 1.84 1.18 3.1 0 4.42-2.69 5.39-5.25 5.68.41.36.78 1.06.78 2.14 0 1.55-.01 2.8-.01 3.18 0 .31.21.68.8.56A11.51 11.51 0 0 0 23.5 12C23.5 5.73 18.27.5 12 .5z"/></svg>
+        <span>GitHub</span>
+      </a>
     </div>
   </header>
 
@@ -56,6 +60,7 @@
     <section class="intro">
       <h1>藏书 <span id="stat-count">—</span> 册</h1>
       <p id="stat-meta">正在整理书房…</p>
+      <p class="intro-features" id="intro-features">电子书朗读 · 四种格式转换 · 丛书整理 · 进度与笔记全留在本地</p>
     </section>
 
     <div class="layout" id="layout">
@@ -99,6 +104,9 @@
         </section>
 
         <p class="reading-line" id="reading-line" hidden></p>
+        <button type="button" class="reading-line guestbook-line" id="guestbook-open">
+          <span>留言板</span><em>写两句 ›</em>
+        </button>
       </aside>
 
       <div class="shelf-col">
@@ -131,6 +139,17 @@
       </div>
     </div>
   </main>
+
+  <!-- format conversion progress: fixed above the shelf, polled while the
+       download request is in flight (a single blob cannot stream progress) -->
+  <div class="convert-progress" id="convert-progress" role="status" aria-live="polite" hidden>
+    <p class="convert-progress-title" id="convert-progress-title">正在转换</p>
+    <div class="convert-progress-track"><div class="convert-progress-fill" id="convert-progress-fill"></div></div>
+    <p class="convert-progress-info">
+      <span id="convert-progress-stage">正在准备…</span>
+      <span id="convert-progress-eta">正在估算…</span>
+    </p>
+  </div>
 
   <!-- book detail sheet: opened from the corner button on a cover -->
   <div class="sheet-scrim" id="book-scrim" hidden></div>
@@ -183,6 +202,36 @@
     <div class="stats-chart" id="stats-chart" aria-label="最近 30 天阅读时长"></div>
     <p class="stats-chart-hint">最近 30 天</p>
     <div class="stats-lists" id="stats-lists"></div>
+  </div>
+
+  <!-- guestbook -->
+  <div class="sheet-scrim" id="guestbook-scrim" hidden></div>
+  <div class="guestbook-sheet" id="guestbook-sheet" role="dialog" aria-modal="true" aria-labelledby="guestbook-title" hidden>
+    <button type="button" class="sheet-close" id="guestbook-close" aria-label="关闭留言板">×</button>
+    <h2 id="guestbook-title">留言板</h2>
+    <p class="guestbook-warn">留言会同步到公开仓库，任何人都能看到，请不要写隐私信息。邮箱会打码显示。</p>
+    <form id="guestbook-form">
+      <div class="gb-input">
+        <textarea id="gb-content" maxlength="800" rows="4" required placeholder=" " aria-label="留言内容"></textarea>
+        <span class="gb-hint" aria-hidden="true">如果有好的建议，或者想对作者有话说，在这里留言哦！点一下就能写。</span>
+      </div>
+
+      <div class="gb-bar">
+        <span class="gb-bar-label">防机器人验证：</span>
+        <strong class="gb-question" id="gb-question">正在取题…</strong>
+        <input id="gb-answer" class="gb-answer" type="text" inputmode="numeric" maxlength="4" required placeholder="答案" aria-label="验证码答案">
+        <button type="button" class="gb-refresh" id="gb-refresh" aria-label="换一道验证码" title="换一道">↻</button>
+        <button type="submit" class="gb-send" id="gb-submit">提交评论</button>
+      </div>
+
+      <div class="gb-fields">
+        <input id="gb-name" type="text" maxlength="30" required placeholder="昵称(必填)" aria-label="昵称，必填">
+        <input id="gb-email" type="email" maxlength="120" required placeholder="邮箱(必填)" aria-label="电子邮箱，必填">
+        <input id="gb-site" type="text" maxlength="120" placeholder="网址" aria-label="个人网址，选填">
+      </div>
+    </form>
+    <p class="guestbook-result" id="guestbook-result" hidden></p>
+    <div class="guestbook-list" id="guestbook-list"></div>
   </div>
 
   <!-- settings drawer -->
@@ -257,6 +306,31 @@
             <span class="type-warn" hidden></span>
           </button>
         </div>
+      </section>
+
+      <section class="setting-group">
+        <div class="group-head"><h3>文字可读性</h3><span class="hint-inline">壁纸黑白不一时用</span></div>
+        <p class="hint">只影响书房页面，阅读器里的字不受影响。壁纸和暗度滑块都不动，只给文字加影或边。</p>
+        <div class="type-grid" id="text-effect-grid" role="radiogroup" aria-label="文字可读性">
+          <button type="button" class="type-card" data-text-effect="soft" role="radio" aria-checked="true">
+            <span class="type-sample type-s-soft">夜读</span>
+            <span class="type-body"><strong>柔和阴影</strong><em>字下方一层淡影，壁纸完全不挡。默认。</em></span>
+          </button>
+          <button type="button" class="type-card" data-text-effect="crisp" role="radio" aria-checked="false">
+            <span class="type-sample type-s-crisp">夜读</span>
+            <span class="type-body"><strong>清晰描边</strong><em>四个方向勾边，纯白壁纸上更清楚。</em></span>
+          </button>
+          <button type="button" class="type-card" data-text-effect="off" role="radio" aria-checked="false">
+            <span class="type-sample">夜读</span>
+            <span class="type-body"><strong>不加效果</strong><em>原样显示，靠壁纸暗度自己调。</em></span>
+          </button>
+        </div>
+      </section>
+
+      <section class="setting-group">
+        <div class="group-head"><h3>留言板同步</h3><span class="hint-inline" id="guestbook-sync-state"></span></div>
+        <p class="hint">填一个有仓库写权限的 GitHub 个人访问令牌，留言才会同步到仓库的 <code>messages/</code> 文件夹。令牌只存在 NAS 的 data/settings.json，不进镜像、不显示在页面上。仓库是公开的，留言内容任何人可见。</p>
+        <label class="field">GitHub 令牌<input id="set-guestbook-token" type="password" maxlength="200" placeholder="未设置" autocomplete="off"></label>
       </section>
 
       <section class="setting-group">

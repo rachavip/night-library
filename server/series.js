@@ -75,7 +75,11 @@ STOP.forEach(word => {
 /* ---------- stored preferences ---------- */
 
 function emptyState() {
-  return { renamed: {}, muted: [] };
+  // `muted` is a group the reader deliberately folded away - it deserves a
+  // "恢复" button. `merged` is a keyword silenced as a side effect of folding
+  // a same-named auto group into a hand-built one; that was a decision, not a
+  // mistake, so it must not show up as something to undo.
+  return { renamed: {}, muted: [], merged: [], order: [] };
 }
 
 function cleanState(raw) {
@@ -88,8 +92,24 @@ function cleanState(raw) {
       if (name && key) state.renamed[String(key)] = name;
     });
   }
+  const hadMerged = Object.prototype.hasOwnProperty.call(raw, 'merged');
   if (Array.isArray(raw.muted)) {
     state.muted = Array.from(new Set(raw.muted.map(v => String(v || '')).filter(Boolean)));
+  }
+  if (Array.isArray(raw.merged)) {
+    state.merged = Array.from(new Set(raw.merged.map(v => String(v || '')).filter(Boolean)));
+  }
+  if (Array.isArray(raw.order)) {
+    // Shelf ids survive renames; a stale id is harmless but keeping thousands
+    // of them would only bloat the file.
+    state.order = Array.from(new Set(raw.order.map(v => String(v || '')).filter(Boolean))).slice(0, 1000);
+  }
+  if (!hadMerged && state.muted.length) {
+    // 旧版只有 muted 一个数组，手动收起和同名合并混在一起，没法逐条分辨。
+    // 这些条目绝大多数来自合并，一次性按合并静默处理：左栏不再冒出「恢复」，
+    // 自动组若真想收起，读者再点一次 × 即可，之后会正常出现在恢复入口里。
+    state.merged = state.muted;
+    state.muted = [];
   }
   return state;
 }
@@ -127,13 +147,14 @@ function rename(state, keyword, rawName) {
   return name;
 }
 
-function mute(state, keyword, on) {
+function mute(state, keyword, on, bucket) {
   const key = String(keyword || '');
   if (!key) return false;
-  const set = new Set(state.muted);
+  const list = bucket === 'merged' ? 'merged' : 'muted';
+  const set = new Set(state[list]);
   if (on === false) set.delete(key);
   else set.add(key);
-  state.muted = Array.from(set);
+  state[list] = Array.from(set);
   return on !== false;
 }
 
@@ -244,7 +265,9 @@ function detect(books, opts) {
  */
 function build(books, state, opts) {
   const st = state || emptyState();
-  const muted = new Set(st.muted || []);
+  // Both kinds of silence keep the auto group from being generated again;
+  // only `muted` is surfaced to the reader as something to restore.
+  const muted = new Set([].concat(st.muted || [], st.merged || []));
   const min = opts && Number(opts.min) > 0 ? Number(opts.min) : 0;
   return detect(books)
     .filter(g => g.bookIds.length && !muted.has(g.keyword) && (!min || g.bookIds.length >= min))

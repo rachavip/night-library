@@ -152,7 +152,8 @@ function splitChapters(paragraphs) {
  * source parsers
  * ------------------------------------------------------------------ */
 
-async function parseTxt(file) {
+async function parseTxt(file, report) {
+  report(12, '正在读取文本');
   const buf = await fsp.readFile(file);
   const text = decodeText(buf).replace(/\r\n?/g, '\n');
   // In a plain text book one line is one paragraph; blank lines are just
@@ -181,7 +182,8 @@ function resolveHref(base, href) {
   return path.posix.normalize(base ? path.posix.join(base, clean) : clean).replace(/^\.\//, '');
 }
 
-async function parseEpub(file) {
+async function parseEpub(file, report) {
+  report(12, '正在打开电子书');
   const zip = await JSZip.loadAsync(await fsp.readFile(file));
 
   const container = await zipText(zip, 'META-INF/container.xml');
@@ -226,6 +228,8 @@ async function parseEpub(file) {
   const chapters = [];
   for (const rel of docs) {
     if (!/\.x?html?$/i.test(rel)) continue;
+    report(12 + Math.round(48 * (chapters.length + 1) / Math.max(1, docs.length)),
+      '正在读取章节 ' + (chapters.length + 1) + ' / ' + docs.length);
     const html = await zipText(zip, rel);
     if (!html) continue;
     // Chapter heading: first h1-h3 inside this document, if any.
@@ -292,7 +296,8 @@ function pdfLinesToParagraphs(lines) {
   return paras;
 }
 
-async function parsePdf(file) {
+async function parsePdf(file, report) {
+  report(12, '正在读取 PDF 文字层');
   const lib = pdfjsModule();
   if (!lib) throw new Error('镜像里缺少 pdf.js，无法读取 PDF 文字层');
   const data = new Uint8Array(await fsp.readFile(file));
@@ -307,6 +312,10 @@ async function parsePdf(file) {
   let pages = [];
   let chars = 0;
   for (let i = 1; i <= pdf.numPages; i++) {
+    // Reading the text layer page by page is the slowest part of a PDF job.
+    // Report per page so the progress bar actually moves on a big book.
+    report(12 + Math.round(58 * (i - 1) / pdf.numPages),
+      '正在读取第 ' + i + ' / ' + pdf.numPages + ' 页');
     const page = await pdf.getPage(i);
     const content = await page.getTextContent();
     const lines = [];
@@ -328,6 +337,10 @@ async function parsePdf(file) {
     for (const p of paras) chars += p.length;
     pages.push(paras);
     page.cleanup();
+    // getTextContent() is CPU-bound. Without yielding, a 200-page book keeps
+    // Node's event loop busy for the whole parse and progress polls (and every
+    // other request) only get answered after the job is already finished.
+    await new Promise(resolve => setImmediate(resolve));
     // Break long PDFs into readable chapters instead of one endless page.
     if (pages.length >= CHUNK) {
       chapters.push({ title: '第 ' + (chapters.length + 1) + ' 部分', paragraphs: [].concat.apply([], pages) });
@@ -355,13 +368,16 @@ async function parsePdf(file) {
 
 /* MOBI / AZW3 go through the reader's own converter first, then the EPUB
  * parser - that way the two paths cannot drift apart. */
-async function parseMobi(book, cfg) {
+async function parseMobi(book, cfg, report) {
+  report(10, '正在解包 Kindle 文件');
   const result = await converter.ensureEpub(book, cfg);
   if (!result.ok) throw new Error(result.error || '解包 Kindle 格式失败');
-  return parseEpub(result.file);
+  if (result.cached) report(18, '解包结果已在缓存里');
+  return parseEpub(result.file, report);
 }
 
-async function parseBook(book, cfg) {
+async function parseBook(book, cfg, report) {
+  report(6, '正在检查源文件');
   const format = String(book.format || '').toLowerCase();
   const folder = book.folder || cfg.booksDir;
   const abs = path.resolve(folder, book.path);
@@ -370,10 +386,10 @@ async function parseBook(book, cfg) {
   if (st.size > MAX_SOURCE_BYTES) throw new Error('源文件超过 150MB，转换要把它整个读进内存，先手动处理一下再转');
 
   let doc;
-  if (format === 'txt') doc = await parseTxt(abs);
-  else if (format === 'epub') doc = await parseEpub(abs);
-  else if (format === 'pdf') doc = await parsePdf(abs);
-  else if (format === 'mobi' || format === 'azw3') doc = await parseMobi(book, cfg);
+  if (format === 'txt') doc = await parseTxt(abs, report);
+  else if (format === 'epub') doc = await parseEpub(abs, report);
+  else if (format === 'pdf') doc = await parsePdf(abs, report);
+  else if (format === 'mobi' || format === 'azw3') doc = await parseMobi(book, cfg, report);
   else throw new Error('不支持从 ' + format.toUpperCase() + ' 转换');
 
   // File metadata is more reliable than anything inside the payload.
@@ -405,7 +421,8 @@ function xmlEscape(s) {
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '');
 }
 
-async function writeTxt(doc, outFile) {
+async function writeTxt(doc, outFile, report) {
+  report(70, '正在写出文本');
   const lines = [doc.title];
   if (doc.author) lines.push(doc.author);
   for (const ch of doc.chapters) {
@@ -419,6 +436,7 @@ async function writeTxt(doc, outFile) {
   // CRLF keeps old Windows notepads happy; the whole file must use one style,
   // otherwise the title block renders as a single mangled line.
   await fsp.writeFile(outFile, lines.join('\r\n') + '\r\n', 'utf8');
+  report(96, '正在保存文件');
 }
 
 function xhtmlPage(doc, ch, idx) {
@@ -441,7 +459,8 @@ const EPUB_CSS = [
   'body { font-family: serif; }'
 ].join('\n');
 
-async function writeEpub(doc, outFile) {
+async function writeEpub(doc, outFile, report) {
+  report(70, '正在生成 EPUB');
   const zip = new JSZip();
   zip.file('mimetype', 'application/epub+zip', { compression: 'STORE' });
   zip.file('META-INF/container.xml',
@@ -453,6 +472,8 @@ async function writeEpub(doc, outFile) {
 
   const files = [];
   doc.chapters.forEach((ch, i) => {
+    report(70 + Math.round(18 * (i + 1) / doc.chapters.length),
+      '正在生成第 ' + (i + 1) + ' / ' + doc.chapters.length + ' 章');
     const name = 'text/ch' + String(i + 1).padStart(4, '0') + '.xhtml';
     files.push(name);
     zip.file('OEBPS/' + name, xhtmlPage(doc, ch, i));
@@ -503,6 +524,7 @@ async function writeEpub(doc, outFile) {
 
   const buf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } });
   await fsp.writeFile(outFile, buf);
+  report(96, '正在保存文件');
 }
 
 /* Deterministic id so re-converting the same book produces the same identifier
@@ -553,7 +575,8 @@ const DOCX_STYLES =
   '<w:rPr><w:rFonts w:eastAsia="SimHei"/><w:b/><w:sz w:val="32"/></w:rPr></w:style>\n' +
   '</w:styles>\n';
 
-async function writeDocx(doc, outFile) {
+async function writeDocx(doc, outFile, report) {
+  report(70, '正在生成 DOCX');
   const zip = new JSZip();
   zip.file('[Content_Types].xml', DOCX_CONTENT_TYPES);
   zip.file('_rels/.rels', DOCX_RELS);
@@ -576,7 +599,10 @@ async function writeDocx(doc, outFile) {
   const body = [];
   body.push(para(doc.title, 'Title'));
   if (doc.author) body.push('<w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:t>' + xmlEscape(doc.author) + '</w:t></w:r></w:p>');
+  let ci = 0;
   for (const ch of doc.chapters) {
+    report(70 + Math.round(18 * (++ci) / doc.chapters.length),
+      '正在生成第 ' + ci + ' / ' + doc.chapters.length + ' 章');
     if (ch.title) body.push(para(ch.title, 'Heading1'));
     for (const p of ch.paragraphs) {
       body.push('<w:p><w:pPr><w:ind w:firstLineChars="200" w:firstLine="480"/></w:pPr>' +
@@ -592,6 +618,7 @@ async function writeDocx(doc, outFile) {
 
   const buf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } });
   await fsp.writeFile(outFile, buf);
+  report(96, '正在保存文件');
 }
 
 /* One open CJK TrueType face is all PDF needs. Droid Sans Fallback ships in
@@ -616,7 +643,7 @@ function pdfFont() {
   return '';
 }
 
-function writePdf(doc, outFile) {
+function writePdf(doc, outFile, report) {
   let PDFDocument;
   try { PDFDocument = require('pdfkit'); } catch (e) {
     const err = new Error('镜像里缺少 pdfkit，无法生成 PDF');
@@ -639,7 +666,7 @@ function writePdf(doc, outFile) {
     });
     const stream = fs.createWriteStream(outFile);
     stream.on('error', reject);
-    stream.on('finish', resolve);
+    stream.on('finish', function () { report(97, '正在保存文件'); resolve(); });
     pdf.pipe(stream);
     pdf.registerFont('cn', font);
     pdf.font('cn');
@@ -656,7 +683,10 @@ function writePdf(doc, outFile) {
     pdf.fontSize(9).fillColor('#888').text('由夜读转换', { align: 'center' });
     pdf.fillColor('#000');
 
+    let pi = 0;
     for (const ch of doc.chapters) {
+      report(70 + Math.round(24 * (++pi) / doc.chapters.length),
+        '正在排版第 ' + pi + ' / ' + doc.chapters.length + ' 章');
       pdf.addPage();
       pdf.fontSize(15).text(ch.title || '', { align: 'center', lineGap: 6 });
       pdf.moveDown(1.2);
@@ -697,7 +727,9 @@ function outputName(book, target) {
  * two writers on the same output path. */
 const inFlight = new Map();
 
-async function transform(book, cfg, target) {
+async function transform(book, cfg, target, onProgress) {
+  const report = typeof onProgress === 'function' ? onProgress : function () {};
+  report(2, '正在准备转换');
   const fmt = String(target || '').toLowerCase();
   if (ALL_TARGETS.indexOf(fmt) < 0) return { ok: false, error: '不认识的目标格式：' + fmt, status: 400 };
   if (!isWritable(fmt)) {
@@ -715,6 +747,7 @@ async function transform(book, cfg, target) {
   try {
     const [s, o] = await Promise.all([fsp.stat(src), fsp.stat(outFile)]);
     if (o.size > 0 && o.mtimeMs >= s.mtimeMs) {
+      report(100, '已完成（使用缓存）');
       return { ok: true, file: outFile, name: outputName(book, fmt), cached: true };
     }
   } catch (e) { /* not cached */ }
@@ -729,14 +762,15 @@ async function transform(book, cfg, target) {
     }
     const tmp = outFile + '.' + process.pid + '.part';
     try {
-      const doc = await parseBook(book, cfg);
-      await WRITERS[fmt](doc, tmp);
+      const doc = await parseBook(book, cfg, report);
+      await WRITERS[fmt](doc, tmp, report);
       const st = await fsp.stat(tmp);
       if (!st.size) {
         await fsp.unlink(tmp).catch(() => {});
         return { ok: false, error: '转换结果是空文件，源文件可能已损坏或加密', status: 422 };
       }
       await fsp.rename(tmp, outFile);
+      report(100, '转换完成');
       return { ok: true, file: outFile, name: outputName(book, fmt), cached: false };
     } catch (e) {
       await fsp.unlink(tmp).catch(() => {});

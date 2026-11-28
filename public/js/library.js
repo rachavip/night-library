@@ -53,6 +53,8 @@
   // Auto series are derived from titles; `mutedCount` counts the ones the
   // reader folded away, so the rail can offer a way back.
   var mutedCount = 0;
+  // 只有读者拖动过才有值；为空时左栏按名称升序排。
+  var seriesOrder = [];
   var lastBooks = [];
   var summary = null;
   var toastTimer;
@@ -325,15 +327,22 @@
       railItem('读完', t ? t.finished : '—',
         state.status === 'finished' && state.hidden !== 'only', 'data-nav="finished"');
 
-    // 两组：软件按书名自己归的（可以改名、可以收起）和手动建的。
-    // 自动的排前面，它们通常就是整柜书。
-    var auto = shelves.filter(function (s) { return s.auto; });
-    var manual = shelves.filter(function (s) { return !s.auto; });
+    // 默认按名称升序（中文按拼音）。只有读者拖过才按存下来的顺序；
+    // 之后扫描新算出来的组不在顺序表里，就按名字补在末尾。
+    var rank = new Map();
+    seriesOrder.forEach(function (id, i) { rank.set(id, i); });
+    var ordered = shelves.slice().sort(function (a, b) {
+      var ia = rank.has(a.id) ? rank.get(a.id) : 1e9;
+      var ib = rank.has(b.id) ? rank.get(b.id) : 1e9;
+      if (ia !== ib) return ia - ib;
+      return String(a.name || '').localeCompare(String(b.name || ''), 'zh-CN');
+    });
 
     function row(s) {
-      return '<button type="button" class="rail-item' +
+      return '<button type="button" class="rail-item rail-series-row" draggable="true"' +
         '" aria-pressed="' + (state.shelf === s.id) + '"' +
-        ' data-series="' + esc(s.id) + '" title="' + esc(s.auto ? '按书名自动归组' : '手动建的丛书') + '">' +
+        ' data-series="' + esc(s.id) + '" title="' +
+        esc((s.auto ? '按书名自动归组' : '手动建的丛书') + ' · 拖动可调整顺序') + '">' +
         '<span>' + esc(s.name) + '</span><em>' + s.count + '</em>' +
         '<span class="rail-edit" data-rename-series="' + esc(s.id) + '" role="button" tabindex="0"' +
         ' aria-label="给「' + esc(s.name) + '」改名">✎</span>' +
@@ -342,7 +351,7 @@
         '</button>';
     }
 
-    var html = auto.map(row).join('') + manual.map(row).join('');
+    var html = ordered.map(row).join('');
     railSeries.innerHTML = html || ('<p class="rail-empty">还没有丛书。书名里出现 5 次以上的词会自动归成一套；' +
       '也可以在「整理」里选中几本手动归组。</p>');
 
@@ -358,9 +367,11 @@
       var data = await api('/api/collections');
       shelves = data.collections || [];
       mutedCount = (data.muted || []).length;
+      seriesOrder = Array.isArray(data.order) ? data.order.slice() : [];
     } catch (e) {
       shelves = [];
       mutedCount = 0;
+      seriesOrder = [];
     }
     renderRail();
   }
@@ -520,8 +531,189 @@
     e.preventDefault();
     deleteSeries(del.getAttribute('data-del-series'));
   });
+  // 左栏丛书拖动排序。默认按名称升序，只有真的拖过才写进 series.json；
+  // 这样下次扫描新算出来的组仍会按名字归位，不会被一个旧的默认顺序卡住。
+  var draggedId = null;
+
+  function clearDropHints() {
+    Array.prototype.forEach.call(railSeries.querySelectorAll('.rail-series-row'), function (el) {
+      el.classList.remove('drop-before', 'drop-after', 'is-dragging');
+    });
+  }
+
+  railSeries.addEventListener('dragstart', function (e) {
+    var item = e.target.closest ? e.target.closest('[data-series]') : null;
+    if (!item) return;
+    draggedId = item.getAttribute('data-series');
+    item.classList.add('is-dragging');
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', draggedId);
+    }
+  });
+
+  railSeries.addEventListener('dragover', function (e) {
+    if (!draggedId) return;
+    var item = e.target.closest ? e.target.closest('[data-series]') : null;
+    if (!item || item.getAttribute('data-series') === draggedId) return;
+    e.preventDefault();
+    var box = item.getBoundingClientRect();
+    var after = e.clientY > box.top + box.height / 2;
+    Array.prototype.forEach.call(railSeries.querySelectorAll('.rail-series-row'), function (el) {
+      el.classList.remove('drop-before', 'drop-after');
+    });
+    item.classList.add(after ? 'drop-after' : 'drop-before');
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+  });
+
+  railSeries.addEventListener('dragleave', function (e) {
+    if (!railSeries.contains(e.relatedTarget)) clearDropHints();
+  });
+
+  railSeries.addEventListener('drop', async function (e) {
+    if (!draggedId) return;
+    var target = e.target.closest ? e.target.closest('[data-series]') : null;
+    e.preventDefault();
+    clearDropHints();
+    if (!target || target.getAttribute('data-series') === draggedId) {
+      draggedId = null;
+      return;
+    }
+    // 按屏幕上看到的顺序取 id，而不是 shelves 的原始顺序，否则拖动结果
+    // 会和读者看到的对不上。
+    var ids = Array.prototype.map.call(railSeries.querySelectorAll('[data-series]'), function (el) {
+      return el.getAttribute('data-series');
+    }).filter(function (id) { return id !== draggedId; });
+    var box = target.getBoundingClientRect();
+    var after = e.clientY > box.top + box.height / 2;
+    var at = ids.indexOf(target.getAttribute('data-series'));
+    if (at < 0) { draggedId = null; return; }
+    ids.splice(after ? at + 1 : at, 0, draggedId);
+    draggedId = null;
+    var previous = seriesOrder.slice();
+    seriesOrder = ids;
+    renderRail();
+    try {
+      await send('/api/series/order', 'POST', { ids: ids });
+      toast('丛书顺序已保存');
+    } catch (err) {
+      seriesOrder = previous;
+      renderRail();
+      toast('顺序没能保存：' + err.message);
+    }
+  });
+
+  railSeries.addEventListener('dragend', function () {
+    draggedId = null;
+    clearDropHints();
+  });
+
   if (railSeriesReset) railSeriesReset.addEventListener('click', restoreSeries);
   document.getElementById('rail-series-new').addEventListener('click', function () { createSeries(); });
+
+  /* ---------- guestbook ---------- */
+  var gbSheet = document.getElementById('guestbook-sheet');
+  var gbScrim = document.getElementById('guestbook-scrim');
+  var gbForm = document.getElementById('guestbook-form');
+  var gbQuestion = document.getElementById('gb-question');
+  var gbAnswer = document.getElementById('gb-answer');
+  var gbList = document.getElementById('guestbook-list');
+  var gbResult = document.getElementById('guestbook-result');
+  var gbSubmit = document.getElementById('gb-submit');
+  var gbNonce = '';
+
+  function gbMessage(text, warn) {
+    gbResult.hidden = false;
+    gbResult.textContent = text;
+    gbResult.classList.toggle('is-warn', Boolean(warn));
+  }
+
+  async function loadCaptcha() {
+    try {
+      var c = await api('/api/guestbook/captcha');
+      gbNonce = c.nonce;
+      gbQuestion.textContent = c.question;
+      gbAnswer.value = '';
+    } catch (e) {
+      gbQuestion.textContent = '取题失败，点 ↻ 重试';
+    }
+  }
+
+  async function loadGuestbook() {
+    try {
+      var data = await api('/api/guestbook');
+      var entries = data.entries || [];
+      gbList.innerHTML = entries.length
+        ? entries.slice().reverse().map(function (e) {
+            var site = String(e.site || '');
+            var shown = site.replace(/^https?:\/\//i, '').replace(/\/$/, '');
+            if (shown.length > 26) shown = shown.slice(0, 25) + '…';
+            return '<div class="gb-entry">' +
+              '<div class="gb-head"><strong>' + esc(e.name) + '</strong>' +
+              '<span>' + esc(e.email) + '</span>' +
+              (site
+                ? '<a class="gb-site" href="' + esc(site) + '" target="_blank" rel="noopener noreferrer nofollow">' + esc(shown) + '</a>'
+                : '') +
+              '<time>' + esc(new Date(e.createdAt).toLocaleString('zh-CN')) + '</time></div>' +
+              '<p>' + esc(e.content) + '</p>' +
+              (e.synced ? '' : '<em class="gb-local">只存本机</em>') +
+              '</div>';
+          }).join('')
+        : '<p class="gb-empty">还没有留言。第一条由你来写。</p>';
+    } catch (e) {
+      gbList.innerHTML = '<p class="gb-empty">留言读取失败：' + esc(e.message) + '</p>';
+    }
+  }
+
+  function openGuestbook() {
+    gbSheet.hidden = false;
+    gbScrim.hidden = false;
+    gbForm.reset();
+    gbResult.hidden = true;
+    loadCaptcha();
+    loadGuestbook();
+    document.getElementById('gb-name').focus();
+  }
+
+  function closeGuestbook() {
+    gbSheet.hidden = true;
+    gbScrim.hidden = true;
+  }
+
+  document.getElementById('guestbook-open').addEventListener('click', openGuestbook);
+  document.getElementById('guestbook-close').addEventListener('click', closeGuestbook);
+  gbScrim.addEventListener('click', closeGuestbook);
+  document.getElementById('gb-refresh').addEventListener('click', loadCaptcha);
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && !gbSheet.hidden) closeGuestbook();
+  });
+
+  gbForm.addEventListener('submit', async function (e) {
+    e.preventDefault();
+    gbSubmit.disabled = true;
+    gbSubmit.textContent = '提交中…';
+    try {
+      var r = await send('/api/guestbook', 'POST', {
+        name: document.getElementById('gb-name').value.trim(),
+        email: document.getElementById('gb-email').value.trim(),
+        site: document.getElementById('gb-site').value.trim(),
+        content: document.getElementById('gb-content').value.trim(),
+        nonce: gbNonce,
+        answer: gbAnswer.value.trim()
+      });
+      gbForm.reset();
+      gbMessage('评论已提交' + (r.syncError ? '；' + r.syncError : '，已同步到 GitHub'), Boolean(r.syncError));
+      await loadCaptcha();
+      await loadGuestbook();
+      toast('评论已提交');
+    } catch (err) {
+      gbMessage(err.message, true);
+      await loadCaptcha();
+    } finally {
+      gbSubmit.disabled = false;
+      gbSubmit.textContent = '提交评论';
+    }
+  });
 
   /* ---------- reading summary line + statistics ---------- */
   async function renderReading() {
@@ -622,6 +814,14 @@
   var sheetNote = document.getElementById('book-sheet-note');
   var sheetConvert = document.getElementById('book-sheet-convert');
   var sheetConvertHint = document.getElementById('book-sheet-convert-hint');
+  var convertProgress = document.getElementById('convert-progress');
+  var convertProgressTitle = document.getElementById('convert-progress-title');
+  var convertProgressFill = document.getElementById('convert-progress-fill');
+  var convertProgressStage = document.getElementById('convert-progress-stage');
+  var convertProgressEta = document.getElementById('convert-progress-eta');
+  var progressTimer = null;
+  var progressShowTimer = null;
+  var progressToken = 0;
   var sheetRescan = document.getElementById('book-sheet-rescan');
   var sheetOpen = document.getElementById('book-sheet-open');
   var sheetClose = document.getElementById('book-sheet-close');
@@ -709,16 +909,70 @@
     setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
   }
 
+  function etaText(seconds) {
+    if (seconds === null || !isFinite(seconds)) return '正在估算…';
+    if (seconds < 2) return '即将完成';
+    if (seconds < 60) return '预计还需 ' + Math.ceil(seconds) + ' 秒';
+    return '预计还需 ' + Math.ceil(seconds / 60) + ' 分';
+  }
+
+  // 服务端按页 / 按章报进度，下载本身却是一次性的 blob 响应、没法流式回传，
+  // 所以另开一个轻量轮询。缓存命中的转换不到 100ms，面板延迟 250ms 才出现，
+  // 不会为了一个瞬间完成的操作闪一下。
+  function trackProgress(id, target, token) {
+    clearInterval(progressTimer);
+    progressTimer = setInterval(async function () {
+      if (token !== progressToken) return;
+      try {
+        var res = await fetch('/api/transform/progress?book=' + encodeURIComponent(id) +
+          '&target=' + encodeURIComponent(target));
+        if (!res.ok || token !== progressToken) return;
+        var p = await res.json();
+        if (!p || typeof p.percent !== 'number') return;
+        var pct = p.percent;
+        convertProgressFill.style.width = pct + '%';
+        convertProgressStage.textContent = p.stage || '';
+        var elapsed = (p.elapsedMs || 0) / 1000;
+        convertProgressEta.textContent = pct >= 100 ? '正在接收文件…'
+          : etaText(pct >= 4 ? elapsed / pct * (100 - pct) : null);
+      } catch (e) { /* 进度只是提示，失败不该影响下载 */ }
+    }, 250);
+  }
+
+  function beginProgress(label, id, target) {
+    var token = ++progressToken;
+    convertProgressTitle.textContent = '正在转换为 ' + label;
+    convertProgressFill.style.width = '0%';
+    convertProgressStage.textContent = '正在准备…';
+    convertProgressEta.textContent = '正在估算…';
+    convertProgress.hidden = true;
+    progressShowTimer = setTimeout(function () {
+      if (token === progressToken) convertProgress.hidden = false;
+    }, 250);
+    trackProgress(id, target, token);
+    return token;
+  }
+
+  function endProgress(token) {
+    if (token !== progressToken) return;
+    clearTimeout(progressShowTimer);
+    clearInterval(progressTimer);
+    progressTimer = null;
+    convertProgress.hidden = true;
+  }
+
   sheetConvert.addEventListener('click', async function (e) {
     var btn = e.target.closest ? e.target.closest('button[data-fmt]') : null;
     if (!btn || btn.disabled || !sheetBook) return;
     var fmt = btn.getAttribute('data-fmt');
     var label = CONVERT_LABEL[fmt] || String(fmt).toUpperCase();
+    var bookId = sheetBook.id;
+    var token = beginProgress(label, bookId, fmt);
     btn.disabled = true;
     btn.classList.add('is-busy');
     btn.textContent = '转换中…';
     try {
-      var res = await fetch('/api/book/' + encodeURIComponent(sheetBook.id) + '/transform/' + fmt);
+      var res = await fetch('/api/book/' + encodeURIComponent(bookId) + '/transform/' + fmt);
       if (!res.ok) {
         var info = null;
         try { info = await res.json(); } catch (err) { /* not json */ }
@@ -731,6 +985,7 @@
     } catch (err) {
       toast(err.message);
     } finally {
+      endProgress(token);
       btn.textContent = label;
       btn.classList.remove('is-busy');
       btn.disabled = false;

@@ -35,6 +35,10 @@ function normalize(data) {
     date: clean(d.date, 40, ''),
     notes: Array.isArray(d.notes)
       ? d.notes.slice(0, 8).map(n => clean(n, 200, '')).filter(Boolean)
+      : [],
+    // 首页简介里的本版亮点，单独一份短文案，别把十几条 notes 倒到页面上。
+    highlights: Array.isArray(d.highlights)
+      ? d.highlights.slice(0, 4).map(n => clean(n, 120, '')).filter(Boolean)
       : []
   };
 }
@@ -43,7 +47,7 @@ function local() {
   try {
     return normalize(JSON.parse(fs.readFileSync(VERSION_FILE, 'utf8')));
   } catch (e) {
-    return { version: '0.0', date: '', notes: [] };
+    return { version: '0.0', date: '', notes: [], highlights: [] };
   }
 }
 

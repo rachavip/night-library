@@ -390,11 +390,24 @@
     function pdfParagraphs(items) {
       var lines = [];
       var buf = '';
+      var lastY = null;
       (items || []).forEach(function (item) {
+        // hasEOL is missing on plenty of real PDFs. The baseline of each
+        // positioned run is the reliable signal for a wrapped line; using it
+        // keeps the speech text in the same order as the text layer the reader
+        // selects, which is what "从这里读" matches against.
+        var y = item.transform ? item.transform[5] : null;
+        if (lastY !== null && y !== null && Math.abs(y - lastY) > 2 && buf.trim()) {
+          lines.push(buf.trim());
+          buf = '';
+        }
         if (item.str) buf += item.str;
         if (item.hasEOL) {
           if (buf.trim()) lines.push(buf.trim());
           buf = '';
+          lastY = null;
+        } else if (y !== null) {
+          lastY = y;
         }
       });
       if (buf.trim()) lines.push(buf.trim());

@@ -6,6 +6,7 @@
   var settings = null;
   var pendingTheme = 'night';
   var pendingTypeface = 'kai';
+  var pendingTextEffect = 'soft';
   var pendingBg = null; // { data, enabled }
   var bgVersion = 0;
   // 取景位置：背景图铺满整页时留下哪一块，百分比，50/50 即居中。
@@ -69,6 +70,14 @@
     root.setAttribute('data-typeface', pendingTypeface);
     Array.prototype.forEach.call(document.querySelectorAll('.type-card'), function (btn) {
       btn.setAttribute('aria-checked', String(btn.dataset.typeface === pendingTypeface));
+    });
+  }
+
+  function applyTextEffect(name) {
+    pendingTextEffect = ['soft', 'crisp', 'off'].indexOf(name) >= 0 ? name : 'soft';
+    root.setAttribute('data-text-effect', pendingTextEffect);
+    Array.prototype.forEach.call(document.querySelectorAll('button[data-text-effect]'), function (btn) {
+      btn.setAttribute('aria-checked', String(btn.dataset.textEffect === pendingTextEffect));
     });
   }
 
@@ -382,6 +391,24 @@
     if (hint) hint.hidden = !(scan.onStartFromEnv || scan.intervalFromEnv);
   }
 
+  // 末字黄底黑字的效果在改名后也要保持。用 DOM 节点写而不是 innerHTML，
+  // 自定义名里带尖括号时不会把页面结构拆坏。
+  function paintBrand(name) {
+    var node = el('brand-name');
+    if (!node) return;
+    var chars = Array.from(String(name || '夜读'));
+    node.textContent = '';
+    if (chars.length < 2) { node.textContent = chars.join(''); return; }
+    var first = document.createElement('span');
+    first.className = 'brand-first';
+    first.textContent = chars.slice(0, -1).join('');
+    var last = document.createElement('span');
+    last.className = 'brand-last';
+    last.textContent = chars[chars.length - 1];
+    node.appendChild(first);
+    node.appendChild(last);
+  }
+
   function applyAll(next) {
     settings = next;
     folders = (settings.folders || []).slice();
@@ -390,12 +417,16 @@
     pendingBg = null;
     applyTheme(pendingTheme);
     applyTypeface(settings.typeface || 'kai');
+    applyTextEffect(settings.textEffect || 'soft');
     markTypefaceSupport();
-    el('brand-name').textContent = settings.systemName || '夜读';
+    paintBrand(settings.systemName || '夜读');
     el('brand-sub').textContent = settings.subtitle || '我的书房';
     document.title = (settings.systemName || '夜读') + ' · ' + (settings.subtitle || '我的书房');
     el('set-name').value = settings.systemName || '';
     el('set-subtitle').value = settings.subtitle || '';
+    el('set-guestbook-token').value = settings.guestbookToken || '';
+    var gbState = el('guestbook-sync-state');
+    if (gbState) gbState.textContent = settings.guestbookToken ? '已配置' : '未配置，留言只存本机';
     renderScan();
     el('bg-path').value = (settings.background && settings.background.data && !settings.background.data.startsWith('uploaded:'))
       ? settings.background.data : '';
@@ -492,6 +523,8 @@
       subtitle: el('set-subtitle').value,
       theme: pendingTheme,
       typeface: pendingTypeface,
+      textEffect: pendingTextEffect,
+      guestbookToken: el('set-guestbook-token').value.trim(),
       folders: folders.slice(),
       scan: {
         onStart: el('scan-on-start').checked,
@@ -600,6 +633,10 @@
 
   Array.prototype.forEach.call(document.querySelectorAll('.type-card'), function (btn) {
     btn.addEventListener('click', function () { applyTypeface(btn.dataset.typeface); });
+  });
+
+  Array.prototype.forEach.call(document.querySelectorAll('button[data-text-effect]'), function (btn) {
+    btn.addEventListener('click', function () { applyTextEffect(btn.dataset.textEffect); });
   });
 
   Array.prototype.forEach.call(document.querySelectorAll('.mode-card'), function (btn) {
