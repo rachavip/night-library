@@ -12,6 +12,7 @@ const fsp = fs.promises;
 const path = require('path');
 const crypto = require('crypto');
 const dns = require('dns');
+const https = require('https');
 
 const REPO = 'rachavip/night-library';
 const BRANCH = 'main';
@@ -126,9 +127,10 @@ function markdown(entry) {
   return lines.join('\n');
 }
 
-/* 15 秒：国内机器到 api.github.com 常常要好几秒才握上手，原来 8 秒太紧，一掐断
- * 就只剩一句「超时」，看不出是慢还是不通。上限也不能给太大——提交留言要等它，
- * 线路不通时等 40 秒谁都受不了。所以这里只试一次，靠「测试连接」去查原因。 */
+/* 一次请求最多等 15 秒。这个上限得由我们自己说了算：之前用 fetch，Node 的
+ * fetch（undici）把「建立连接」硬编码成 10 秒，报出来的 UND_ERR_CONNECT_TIMEOUT
+ * 比我们设的 15 秒还早——看着像「连不上」，其实只是握手慢（线路要重传好几轮）。
+ * 换成 https.request 后，计时全在自己手里，也能指定只用 IPv4。 */
 const TIMEOUT_MS = 15000;
 
 function remoteName(entry) {
@@ -138,66 +140,108 @@ function remoteName(entry) {
 
 function reason(err) {
   const cause = (err && err.cause) || {};
-  const code = cause.code || (err && err.code) || '';
-  // fetch 自己只会说 "fetch failed"，真正的原因（ECONNREFUSED / ENOTFOUND /
-  // 证书错误…）藏在 cause 里，把它挑出来才有诊断价值。
-  const raw = code ? (cause.message || (err && err.message) || '') : ((err && err.message) || err || '');
+  const code = (err && err.code) || cause.code || '';
+  const raw = (err && err.message) || cause.message || '';
   const msg = String(raw).replace(/^fetch failed:?\s*/i, '').slice(0, 110);
-  return code ? '（' + code + '）' + msg : msg;
+  return code && msg.indexOf(code) < 0 ? '（' + code + '）' + msg : msg;
 }
 
-/* 一次 PUT，带计时。HTTP 4xx/5xx 是 GitHub 的明确答复，原样抛；连不上则把
- * fetch 藏起来的原因（ECONNREFUSED / ENOTFOUND / 证书错误…）翻出来给人看。 */
+/* 直连 api.github.com 的小封装：只用 IPv4，超时自己管，返回状态码和耗时。
+ * 证书错误、连接被拒、域名解析失败都会带着各自的 code 抛出来，方便报给使用者。 */
+function httpsRequest(options) {
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    let settled = false;
+    const req = https.request({
+      host: 'api.github.com',
+      port: 443,
+      family: 4,
+      method: options.method || 'GET',
+      path: options.path,
+      headers: options.headers
+    }, res => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => {
+        if (settled) return;
+        settled = true;
+        resolve({
+          status: res.statusCode,
+          body: Buffer.concat(chunks).toString('utf8'),
+          ms: Date.now() - started
+        });
+      });
+    });
+    req.setTimeout(TIMEOUT_MS, () => {
+      const err = new Error('等 ' + Math.round(TIMEOUT_MS / 1000) + ' 秒还没握手完成');
+      err.code = 'ETIMEDOUT';
+      req.destroy(err);
+    });
+    req.on('error', e => {
+      if (settled) return;
+      settled = true;
+      reject(e);
+    });
+    if (options.body) req.write(options.body);
+    req.end();
+  });
+}
+
+/* 一次 PUT。HTTP 4xx/5xx 是 GitHub 的明确答复，原样抛；连不上则把底层原因
+ * （ECONNRESET / ETIMEDOUT / 证书错误…）翻出来给人看。 */
 async function putOnce(pathname, body, token) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-  const started = Date.now();
   try {
-    const res = await fetch('https://api.github.com' + pathname, {
+    const res = await httpsRequest({
       method: 'PUT',
+      path: pathname,
       headers: {
         'Authorization': 'Bearer ' + token,
         'Accept': 'application/vnd.github+json',
         'X-GitHub-Api-Version': '2022-11-28',
         'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
         'User-Agent': 'night-library-guestbook'
       },
-      body: JSON.stringify(body),
-      signal: controller.signal
+      body
     });
-    if (!res.ok) {
+    if (res.status < 200 || res.status >= 300) {
       let detail = '';
-      try { detail = ((await res.json()).message || '').slice(0, 110); } catch (e) { /* ignore */ }
+      try { detail = String(JSON.parse(res.body).message || '').slice(0, 110); } catch (e) { /* ignore */ }
       const err = new Error('GitHub ' + res.status + (detail ? '：' + detail : ''));
       err.httpStatus = res.status;
       throw err;
     }
-    return { ms: Date.now() - started };
+    return res;
   } catch (e) {
     if (e.httpStatus) throw e;
-    const ms = Date.now() - started;
-    let err;
-    if (e.name === 'AbortError') {
-      err = new Error('GitHub 连接超时（' + Math.round(ms / 1000) + ' 秒没收到任何响应）');
-    } else {
-      err = new Error('GitHub 连接失败' + reason(e));
-    }
-    throw err;
-  } finally {
-    clearTimeout(timer);
+    if (e.code === 'ETIMEDOUT') throw new Error('GitHub 连接超时（15 秒没完成握手）');
+    throw new Error('GitHub 连接失败' + reason(e));
   }
 }
 
 /* GitHub Contents API. Each message gets its own file so two submissions can
  * never fight over the same SHA. A token without repo write scope gets a clean
- * error back instead of a stack trace. */
-async function pushToGitHub(entry, token) {
+ * error back instead of a stack trace.
+ * tries 由调用方给：提交留言时只有一次（人还在等回复，不能让他等三十秒）；
+ * 手动「补传」可以多试一次，反正按钮转一会儿没人在意。 */
+async function pushToGitHub(entry, token, tries) {
   const remotePath = remoteName(entry);
-  await putOnce('/repos/' + REPO + '/contents/' + encodeURI(remotePath), {
+  const pathname = '/repos/' + REPO + '/contents/' + encodeURI(remotePath);
+  const body = JSON.stringify({
     message: 'guestbook: ' + entry.name + ' ' + entry.createdAt,
     content: Buffer.from(markdown(entry), 'utf8').toString('base64'),
     branch: BRANCH
-  }, token);
+  });
+  const attempts = Math.max(1, Number(tries) || 1);
+  for (let i = 0; i < attempts; i++) {
+    try {
+      await putOnce(pathname, body, token);
+      return remotePath;
+    } catch (e) {
+      if (e.httpStatus || i === attempts - 1) throw e;
+      await new Promise(r => setTimeout(r, 1500));
+    }
+  }
   return remotePath;
 }
 
@@ -216,7 +260,7 @@ async function resync(cfg, settings) {
   let error = '';
   for (const item of todo) {
     try {
-      item.githubPath = await pushToGitHub(item, token);
+      item.githubPath = await pushToGitHub(item, token, 2);
       item.synced = true;
       pushed++;
     } catch (e) {
@@ -238,7 +282,8 @@ async function resync(cfg, settings) {
 
 /* 出网体检：DNS 解析到哪个地址、到 api.github.com 能不能通、令牌能不能读到
  * 仓库。三项分开报，才能分清是「域名解析不了」「线路不通」还是「令牌不对」。
- * 只读，不写任何东西。 */
+ * 只读，不写任何东西。走的是和同步同一条路（https.request + IPv4 + 15 秒），
+ * 所以这里通不了的话，同步也通不了。 */
 async function diag(settings) {
   const out = { dns: [], dnsError: '', api: null, repo: null, hasToken: Boolean(settings && settings.guestbookToken) };
 
@@ -249,35 +294,29 @@ async function diag(settings) {
     out.dnsError = (e && e.code) || String(e.message || e);
   }
 
-  const probe = async (url, token) => {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const probe = async (pathname, token) => {
     const started = Date.now();
     try {
-      const res = await fetch(url, {
+      const res = await httpsRequest({
+        path: pathname,
         headers: Object.assign(
           { 'Accept': 'application/vnd.github+json', 'User-Agent': 'night-library-guestbook' },
           token ? { 'Authorization': 'Bearer ' + token } : {}
-        ),
-        signal: controller.signal
+        )
       });
-      try { await res.arrayBuffer(); } catch (e) { /* ignore */ }
-      return { status: res.status, ms: Date.now() - started, error: '' };
+      return { status: res.status, ms: res.ms, error: '' };
     } catch (e) {
-      const ms = Date.now() - started;
       return {
         status: 0,
-        ms,
-        error: e.name === 'AbortError' ? '超时（' + Math.round(ms / 1000) + ' 秒无响应）' : reason(e)
+        ms: Date.now() - started,
+        error: e.code === 'ETIMEDOUT' ? '超时（15 秒没完成握手）' : reason(e)
       };
-    } finally {
-      clearTimeout(timer);
     }
   };
 
-  out.api = await probe('https://api.github.com/rate_limit');
+  out.api = await probe('/rate_limit');
   const token = String((settings && settings.guestbookToken) || '');
-  if (token) out.repo = await probe('https://api.github.com/repos/' + REPO, token);
+  if (token) out.repo = await probe('/repos/' + REPO, token);
   return out;
 }
 
