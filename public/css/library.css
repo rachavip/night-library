@@ -43,7 +43,10 @@ button { cursor: pointer; }
 .brand {
   position: relative;
   display: flex;
-  align-items: baseline;
+  /* 一律靠下对齐：图标占满 48px 行高，若按基线排，「我的书房」会被挂在
+     字的基线上、落在上半区，看着像跟图标顶部齐。改成底对齐后，
+     品牌名框、副标题、版本徽章的底边压在同一条线上。 */
+  align-items: flex-end;
   gap: 10px;
   font-family: var(--f-brand);
   font-size: 28px;
@@ -56,7 +59,11 @@ button { cursor: pointer; }
 #brand-name {
   display: inline-flex;
   align-items: center;
-  padding: 2px 6px 3px;
+  /* 行高收到 1，描边框才能真正贴住字面：楷体的默认行高约 1.32em，
+     28px 的字会撑出 37px 的框，框里上下全是空，旁边的图标就显得小。
+     收到 1 之后框高约 32px，跑马圈刚好咬着字。 */
+  line-height: 1;
+  padding: 1px 5px;
   border: 1px solid var(--amber);
   border-radius: 4px;
   /* .brand 的字距是给整个品牌留的，这里两字要贴紧，单独收回来。 */
@@ -67,7 +74,7 @@ button { cursor: pointer; }
 .brand-first { color: #fff; }
 .brand-last {
   margin-left: 2px;
-  padding: 0 4px 1px;
+  padding: 0 4px;
   color: #0B121C;
   background: #FFA500;
   border-radius: 3px;
@@ -75,8 +82,8 @@ button { cursor: pointer; }
 /* 纸笺是浅色主题，白字会消失，改用该主题的正文字色。 */
 :root[data-app-theme="paper"] .brand-first { color: var(--paper); }
 /* 图标本体四周有留白，按 30px 摆出来的实际大小比 28px 的「夜读」还小一圈。
-   放大到 48px，比字（28px）和描边框（约 37px）都高一截，改用居中对齐
-   （baseline 对齐会让大图标往下穿出顶栏）。 */
+   放大到 48px，明显高于 32px 的描边框，改用居中对齐（baseline 对齐会让
+   大图标往下穿出顶栏）。 */
 .brand-logo {
   width: 48px;
   height: 48px;
