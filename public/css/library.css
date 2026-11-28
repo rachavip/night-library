@@ -31,8 +31,10 @@ button { cursor: pointer; }
   align-items: center;
   justify-content: space-between;
   gap: 20px;
+  /* 图标要明显压过「夜读」两字，上下内边距收到 8px 换出高度：
+     8 + 48 + 8 = 64，和原来的顶栏高度一致，不会把页面往下推。 */
   min-height: 64px;
-  padding: 12px 40px;
+  padding: 8px 40px;
   background: rgba(11, 18, 28, 0.94);
   backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--line-soft);
@@ -72,14 +74,17 @@ button { cursor: pointer; }
 }
 /* 纸笺是浅色主题，白字会消失，改用该主题的正文字色。 */
 :root[data-app-theme="paper"] .brand-first { color: var(--paper); }
+/* 图标本体四周有留白，按 30px 摆出来的实际大小比 28px 的「夜读」还小一圈。
+   放大到 48px，比字（28px）和描边框（约 37px）都高一截，改用居中对齐
+   （baseline 对齐会让大图标往下穿出顶栏）。 */
 .brand-logo {
-  width: 30px;
-  height: 30px;
+  width: 48px;
+  height: 48px;
   object-fit: contain;
   flex: none;
-  transform: translateY(3px);
+  align-self: center;
 }
-@media (max-width: 720px) { .brand-logo { width: 24px; height: 24px; } }
+@media (max-width: 720px) { .brand-logo { width: 38px; height: 38px; } }
 .brand-sub {
   font-family: var(--sans);
   font-size: 13px;
