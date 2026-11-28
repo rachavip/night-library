@@ -500,11 +500,87 @@
     });
   }
 
+  /* ---------- 留言板同步 ---------- */
+  // 两件事：体检（到底卡在哪一步）和补传（令牌填晚了，之前那几条一直没上去）。
+  // 都在设置抽屉里，访客看不到，也用不着令牌。
+  function describeDiag(d) {
+    var bits = [];
+    if (d.dns && d.dns.length) bits.push('域名解析到 ' + d.dns.join(' / '));
+    else bits.push('域名解析失败' + (d.dnsError ? '（' + d.dnsError + '）' : ''));
+
+    var api = d.api || {};
+    if (api.status) bits.push('api.github.com 能连上，HTTP ' + api.status + ' · ' + (api.ms / 1000).toFixed(1) + ' 秒');
+    else bits.push('api.github.com 连不上：' + (api.error || '没有响应'));
+
+    if (d.hasToken) {
+      var repo = d.repo || {};
+      if (repo.status === 200) bits.push('令牌能读仓库');
+      else if (repo.status === 401) bits.push('令牌被拒（HTTP 401，多半已过期或被撤销）');
+      else if (repo.status === 403) bits.push('令牌权限不够（HTTP 403，Contents 要给 Read and write）');
+      else if (repo.status) bits.push('令牌请求返回 HTTP ' + repo.status);
+      else bits.push('令牌请求没发出去：' + (repo.error || '没有响应'));
+    } else {
+      bits.push('还没填令牌');
+    }
+    return bits.join('；') + '。';
+  }
+
+  async function loadGuestbookPending() {
+    var btn = el('gb-resync');
+    if (!btn) return;
+    try {
+      var data = await fetch('/api/guestbook').then(function (r) { return r.json(); });
+      var n = Number(data.pending) || 0;
+      btn.textContent = n ? '补传未同步（' + n + ' 条）' : '补传未同步';
+      btn.disabled = !n;
+    } catch (e) { /* 读不到就保持原样 */ }
+  }
+
+  var gbTest = el('gb-test');
+  if (gbTest) {
+    gbTest.addEventListener('click', async function () {
+      var note = el('gb-note');
+      gbTest.disabled = true;
+      if (note) note.textContent = '正在从 NAS 里试一次到 GitHub 的路，最多等 40 秒…';
+      try {
+        var d = await fetch('/api/guestbook/diag').then(function (r) { return r.json(); });
+        if (note) note.textContent = describeDiag(d);
+      } catch (e) {
+        if (note) note.textContent = '体检失败：' + e.message;
+      }
+      gbTest.disabled = false;
+    });
+  }
+
+  var gbResync = el('gb-resync');
+  if (gbResync) {
+    gbResync.addEventListener('click', async function () {
+      var note = el('gb-note');
+      gbResync.disabled = true;
+      if (note) note.textContent = '正在补传，一条大概要一两秒…';
+      try {
+        var r = await fetch('/api/guestbook/resync', { method: 'POST' }).then(function (x) { return x.json(); });
+        if (!r.pushed) {
+          if (note) note.textContent = r.error ? '一条都没传上去：' + r.error : '没有待补传的留言。';
+        } else {
+          var msg = '补传完成，成功 ' + r.pushed + ' 条';
+          if (r.failed) msg += '，还有 ' + r.failed + ' 条没上去（' + r.error + '）';
+          if (note) note.textContent = msg + '。';
+          toastFn(msg);
+        }
+      } catch (e) {
+        if (note) note.textContent = '补传失败：' + e.message;
+      }
+      loadGuestbookPending();
+    });
+  }
+
   function openDrawer() {
     drawer.hidden = false;
     scrim.hidden = false;
     applyAll(settings);
     loadTaste();
+    loadGuestbookPending();
   }
 
   function closeDrawer() {
@@ -565,6 +641,7 @@
     var btn = el('settings-save');
     btn.disabled = true;
     var beforeFolders = JSON.stringify(folders.slice().sort());
+    var beforeToken = String(settings.guestbookToken || '');
     try {
       var res = await fetch('/api/settings', {
         method: 'PUT',
@@ -578,6 +655,12 @@
       applyBackground();
       closeDrawer();
       if (window.nightBooks) window.nightBooks.refresh();
+
+      // 令牌变了：服务器收到保存后会在后台把以前没传上去的留言补一遍，
+      // 几秒后再看「补传」按钮上的条数才是准的。
+      if (String(data.guestbookToken || '') !== beforeToken) {
+        setTimeout(loadGuestbookPending, 4000);
+      }
 
       // Forget the removed folders' derived data while the old index is still
       // loaded - that index is what maps a folder to its book ids.

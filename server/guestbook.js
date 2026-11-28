@@ -11,6 +11,7 @@ const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
 const crypto = require('crypto');
+const dns = require('dns');
 
 const REPO = 'rachavip/night-library';
 const BRANCH = 'main';
@@ -125,43 +126,159 @@ function markdown(entry) {
   return lines.join('\n');
 }
 
+/* 15 秒：国内机器到 api.github.com 常常要好几秒才握上手，原来 8 秒太紧，一掐断
+ * 就只剩一句「超时」，看不出是慢还是不通。上限也不能给太大——提交留言要等它，
+ * 线路不通时等 40 秒谁都受不了。所以这里只试一次，靠「测试连接」去查原因。 */
+const TIMEOUT_MS = 15000;
+
+function remoteName(entry) {
+  const name = (entry.name || '匿名').replace(/[\\/:*?"<>|]/g, '_').slice(0, 24);
+  return REMOTE_DIR + '/' + stamp() + '-' + entry.id.slice(0, 6) + '-' + name + '.md';
+}
+
+function reason(err) {
+  const cause = (err && err.cause) || {};
+  const code = cause.code || (err && err.code) || '';
+  // fetch 自己只会说 "fetch failed"，真正的原因（ECONNREFUSED / ENOTFOUND /
+  // 证书错误…）藏在 cause 里，把它挑出来才有诊断价值。
+  const raw = code ? (cause.message || (err && err.message) || '') : ((err && err.message) || err || '');
+  const msg = String(raw).replace(/^fetch failed:?\s*/i, '').slice(0, 110);
+  return code ? '（' + code + '）' + msg : msg;
+}
+
+/* 一次 PUT，带计时。HTTP 4xx/5xx 是 GitHub 的明确答复，原样抛；连不上则把
+ * fetch 藏起来的原因（ECONNREFUSED / ENOTFOUND / 证书错误…）翻出来给人看。 */
+async function putOnce(pathname, body, token) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const started = Date.now();
+  try {
+    const res = await fetch('https://api.github.com' + pathname, {
+      method: 'PUT',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Accept': 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        'Content-Type': 'application/json',
+        'User-Agent': 'night-library-guestbook'
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+    if (!res.ok) {
+      let detail = '';
+      try { detail = ((await res.json()).message || '').slice(0, 110); } catch (e) { /* ignore */ }
+      const err = new Error('GitHub ' + res.status + (detail ? '：' + detail : ''));
+      err.httpStatus = res.status;
+      throw err;
+    }
+    return { ms: Date.now() - started };
+  } catch (e) {
+    if (e.httpStatus) throw e;
+    const ms = Date.now() - started;
+    let err;
+    if (e.name === 'AbortError') {
+      err = new Error('GitHub 连接超时（' + Math.round(ms / 1000) + ' 秒没收到任何响应）');
+    } else {
+      err = new Error('GitHub 连接失败' + reason(e));
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /* GitHub Contents API. Each message gets its own file so two submissions can
  * never fight over the same SHA. A token without repo write scope gets a clean
  * error back instead of a stack trace. */
 async function pushToGitHub(entry, token) {
-  const name = (entry.name || '匿名').replace(/[\\/:*?"<>|]/g, '_').slice(0, 24);
-  const remotePath = REMOTE_DIR + '/' + stamp() + '-' + entry.id.slice(0, 6) + '-' + name + '.md';
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8000);
-  try {
-    const res = await fetch(
-      'https://api.github.com/repos/' + REPO + '/contents/' + encodeURI(remotePath),
-      {
-        method: 'PUT',
-        headers: {
-          'Authorization': 'Bearer ' + token,
-          'Accept': 'application/vnd.github+json',
-          'X-GitHub-Api-Version': '2022-11-28',
-          'Content-Type': 'application/json',
-          'User-Agent': 'night-library-guestbook'
-        },
-        body: JSON.stringify({
-          message: 'guestbook: ' + entry.name + ' ' + entry.createdAt,
-          content: Buffer.from(markdown(entry), 'utf8').toString('base64'),
-          branch: BRANCH
-        }),
-        signal: controller.signal
-      }
-    );
-    if (!res.ok) {
-      let detail = '';
-      try { detail = ((await res.json()).message || '').slice(0, 120); } catch (e) { /* ignore */ }
-      throw new Error('GitHub ' + res.status + (detail ? '：' + detail : ''));
+  const remotePath = remoteName(entry);
+  await putOnce('/repos/' + REPO + '/contents/' + encodeURI(remotePath), {
+    message: 'guestbook: ' + entry.name + ' ' + entry.createdAt,
+    content: Buffer.from(markdown(entry), 'utf8').toString('base64'),
+    branch: BRANCH
+  }, token);
+  return remotePath;
+}
+
+/* 令牌填得比留言晚是常态：那时候提交的留言标着 synced=false，之后再也没人
+ * 碰过它。这里把没传上去的逐条补上，中途只要有一条失败就停——连着失败说明
+ * 线路不通，继续等下去只会让按钮转很久。 */
+async function resync(cfg, settings) {
+  const token = String((settings && settings.guestbookToken) || '');
+  if (!token) return { pending: 0, pushed: 0, failed: 0, error: '还没有填 GitHub 令牌' };
+  const entries = await readEntries(cfg);
+  const waiting = entries.filter(e => !e.synced);
+  if (!waiting.length) return { pending: 0, pushed: 0, failed: 0, error: '' };
+
+  const todo = waiting.slice(0, 20);
+  let pushed = 0;
+  let error = '';
+  for (const item of todo) {
+    try {
+      item.githubPath = await pushToGitHub(item, token);
+      item.synced = true;
+      pushed++;
+    } catch (e) {
+      error = String(e.message || e).slice(0, 160);
+      break;
     }
-    return remotePath;
-  } finally {
-    clearTimeout(timer);
   }
+  if (pushed) {
+    // 只把同步结果写回去，不整体覆盖，避免和正在提交的新留言打架。
+    const fresh = await readEntries(cfg);
+    todo.forEach(item => {
+      const hit = fresh.find(e => e.id === item.id);
+      if (hit && item.synced) { hit.synced = true; hit.githubPath = item.githubPath; }
+    });
+    await writeEntries(cfg, fresh);
+  }
+  return { pending: waiting.length, pushed, failed: waiting.length - pushed, error };
+}
+
+/* 出网体检：DNS 解析到哪个地址、到 api.github.com 能不能通、令牌能不能读到
+ * 仓库。三项分开报，才能分清是「域名解析不了」「线路不通」还是「令牌不对」。
+ * 只读，不写任何东西。 */
+async function diag(settings) {
+  const out = { dns: [], dnsError: '', api: null, repo: null, hasToken: Boolean(settings && settings.guestbookToken) };
+
+  try {
+    const list = await dns.promises.lookup('api.github.com', { all: true });
+    out.dns = list.map(a => a.address);
+  } catch (e) {
+    out.dnsError = (e && e.code) || String(e.message || e);
+  }
+
+  const probe = async (url, token) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    const started = Date.now();
+    try {
+      const res = await fetch(url, {
+        headers: Object.assign(
+          { 'Accept': 'application/vnd.github+json', 'User-Agent': 'night-library-guestbook' },
+          token ? { 'Authorization': 'Bearer ' + token } : {}
+        ),
+        signal: controller.signal
+      });
+      try { await res.arrayBuffer(); } catch (e) { /* ignore */ }
+      return { status: res.status, ms: Date.now() - started, error: '' };
+    } catch (e) {
+      const ms = Date.now() - started;
+      return {
+        status: 0,
+        ms,
+        error: e.name === 'AbortError' ? '超时（' + Math.round(ms / 1000) + ' 秒无响应）' : reason(e)
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  out.api = await probe('https://api.github.com/rate_limit');
+  const token = String((settings && settings.guestbookToken) || '');
+  if (token) out.repo = await probe('https://api.github.com/repos/' + REPO, token);
+  return out;
 }
 
 async function submit(cfg, settings, body, ip) {
@@ -212,7 +329,7 @@ async function submit(cfg, settings, body, ip) {
       const hit = fresh.find(e => e.id === entry.id);
       if (hit) { hit.synced = true; hit.githubPath = entry.githubPath; await writeEntries(cfg, fresh); }
     } catch (e) {
-      syncError = e.name === 'AbortError' ? 'GitHub 连接超时' : String(e.message || e).slice(0, 160);
+      syncError = String(e.message || e).slice(0, 160);
     }
   } else {
     syncError = '未配置 GitHub 令牌，留言只存在本机';
@@ -221,4 +338,4 @@ async function submit(cfg, settings, body, ip) {
   return { entry: forBrowser([entry])[0], syncError };
 }
 
-module.exports = { captcha, readEntries, forBrowser, submit };
+module.exports = { captcha, readEntries, forBrowser, submit, resync, diag };

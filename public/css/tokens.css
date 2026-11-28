@@ -9,6 +9,10 @@
   --dim: #93A0B0;
   --amber: #E9A23B;
   --amber-soft: rgba(233, 162, 59, 0.13);
+  /* 左栏面板的底（留言板、继续阅读、最近在读、阅读统计那行）。
+   * 用半透明而不是实心 night-800：设了壁纸时，实心块会在壁纸上抠出一块块黑板。
+   * 四套主题各给一份——浅色主题必须用浅色玻璃，否则整页会黑一块。 */
+  --panel-glass: rgba(11, 18, 28, 0.72);
 
   /* Paper reading surface — only inside the reader. */
   --sheet: #F5F0E4;
@@ -47,6 +51,7 @@
   --dim: #736B5C;
   --amber: #8A5A1F;
   --amber-soft: rgba(138, 90, 31, 0.12);
+  --panel-glass: rgba(239, 233, 220, 0.84);
 }
 :root[data-app-theme="ink"] {
   --night-900: #07090B;
@@ -58,6 +63,7 @@
   --dim: #868E95;
   --amber: #D9C08A;
   --amber-soft: rgba(217, 192, 138, 0.12);
+  --panel-glass: rgba(7, 9, 11, 0.76);
 }
 :root[data-app-theme="tide"] {
   --night-900: #071A1B;
@@ -69,6 +75,7 @@
   --dim: #8FB0AA;
   --amber: #6ED0B6;
   --amber-soft: rgba(110, 208, 182, 0.13);
+  --panel-glass: rgba(7, 26, 27, 0.74);
 }
 
 /* --scrim follows the dim slider. The text halo is user-selectable in the

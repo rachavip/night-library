@@ -2,6 +2,7 @@ const express = require('express');
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
+const dns = require('dns');
 const iconv = require('iconv-lite');
 const library = require('./library');
 const reading = require('./reading');
@@ -13,6 +14,11 @@ const notes = require('./notes');
 const converter = require('./convert');
 const transformer = require('./transform');
 const guestbook = require('./guestbook');
+
+// 很多 NAS 有 IPv6 地址却没有可用的 IPv6 出口：Node 默认按 DNS 返回顺序挑地址，
+// 一旦先挑到 AAAA，连接到 GitHub 就会一直挂着直到超时（curl 会 200ms 后自动退回
+// IPv4，所以命令行测着通、程序里却超时）。强制先用 IPv4，这一行解决的就是它。
+dns.setDefaultResultOrder('ipv4first');
 
 // Conversion progress is held in memory only. A job lasts seconds, so there
 // is nothing worth persisting; after five minutes a stale entry is dropped.
@@ -345,6 +351,7 @@ app.get('/api/settings', (req, res) => {
 
 app.put('/api/settings', async (req, res) => {
   // Env vars (from docker-compose.yml) always win over form values.
+  const before = String(settings.guestbookToken || '');
   settings = settingsStore.applyEnv(settingsStore.merge(settings, req.body), process.env);
   try {
     await settingsStore.save(cfg, settings);
@@ -353,6 +360,17 @@ app.put('/api/settings', async (req, res) => {
     res.json(settingsStore.forBrowser(settings));
   } catch (e) {
     res.status(500).json({ error: '保存设置失败：' + e.message });
+  }
+  // 刚填进令牌的话，把之前没传上去的留言顺手补一遍。放在响应之后跑，
+  // 不让保存按钮等网络；失败了也不吵人，下次还能手动点「补传」。
+  const after = String(settings.guestbookToken || '');
+  if (after && after !== before) {
+    guestbook.resync(cfg, settings)
+      .then(r => {
+        if (r.pushed) console.log(`[guestbook] 自动补传 ${r.pushed} 条留言`);
+        else if (r.error) console.log('[guestbook] 自动补传没成功：' + r.error);
+      })
+      .catch(err => console.log('[guestbook] 自动补传失败：' + err.message));
   }
 });
 
@@ -366,9 +384,31 @@ app.get('/api/guestbook/captcha', (req, res) => {
 app.get('/api/guestbook', async (req, res) => {
   try {
     const entries = await guestbook.readEntries(cfg);
-    res.json({ entries: guestbook.forBrowser(entries), configured: Boolean(settings.guestbookToken) });
+    res.json({
+      entries: guestbook.forBrowser(entries),
+      configured: Boolean(settings.guestbookToken),
+      pending: entries.filter(e => !e.synced).length
+    });
   } catch (e) {
     res.status(500).json({ error: '读取留言失败：' + e.message });
+  }
+});
+
+// 出网体检：DNS、到 api.github.com、令牌能不能读仓库，分三项报。
+app.get('/api/guestbook/diag', async (req, res) => {
+  try {
+    res.json(await guestbook.diag(settings));
+  } catch (e) {
+    res.status(500).json({ error: '体检失败：' + e.message });
+  }
+});
+
+// 补传以前没传上去的留言（先留言、后填令牌是正常顺序）。
+app.post('/api/guestbook/resync', async (req, res) => {
+  try {
+    res.json(Object.assign({ ok: true }, await guestbook.resync(cfg, settings)));
+  } catch (e) {
+    res.status(500).json({ error: '补传失败：' + e.message });
   }
 });
 

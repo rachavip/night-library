@@ -337,6 +337,11 @@
         <div class="group-head"><h3>留言板同步</h3><span class="hint-inline" id="guestbook-sync-state"></span></div>
         <p class="hint">填一个有仓库写权限的 GitHub 个人访问令牌，留言才会同步到仓库的 <code>messages/</code> 文件夹。令牌只存在 NAS 的 data/settings.json，不进镜像、不显示在页面上。仓库是公开的，留言内容任何人可见。</p>
         <label class="field">GitHub 令牌<input id="set-guestbook-token" type="password" maxlength="200" placeholder="未设置" autocomplete="off"></label>
+        <div class="bg-crop-row">
+          <button type="button" class="ghost-btn" id="gb-test">测试连接</button>
+          <button type="button" class="ghost-btn" id="gb-resync">补传未同步</button>
+        </div>
+        <p class="hint" id="gb-note">「测试连接」会从 NAS 里试一次到 GitHub 的路，告诉你卡在哪一步；「补传」把以前没传上去的留言重新推一遍。</p>
       </section>
 
       <section class="setting-group">
