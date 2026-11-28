@@ -471,6 +471,39 @@
   audio.addEventListener('error', function () { toastFn('这首歌无法播放，正在跳到下一首'); step(1); });
 
   /* ---------- public API used by settings.js ---------- */
+  /* ---------- read aloud: music steps aside ---------- */
+  // 朗读发生在阅读器那个标签页里，两个声音叠在一起谁也听不清。朗读开始时那边
+  // 发一条消息过来，这里只做一件事：把正在响的那一首停掉——不弹面板、不提示，
+  // 读者并没有要求「关掉音乐」，只是要听书。
+  function hushForReading() {
+    if (mode === 'embed') {
+      var doc = playerFrameDoc();
+      if (!doc) return;                                  // 播放器都没加载过，自然没声音
+      var pauseBtn = doc.querySelector('[aria-label="暂停"]');
+      if (pauseBtn) {
+        try { pauseBtn.click(); } catch (e) { /* ignore */ }
+      }
+      return;
+    }
+    if (!player.hidden) {
+      try { audio.pause(); } catch (e) { /* ignore */ }
+      if (playBtn) playBtn.textContent = '▶';
+    }
+  }
+
+  try {
+    if (window.BroadcastChannel) {
+      var readChannel = new BroadcastChannel('night-library');
+      readChannel.onmessage = function (event) {
+        if (event && event.data && event.data.type === 'read-aloud') hushForReading();
+      };
+    }
+  } catch (e) { /* 没有 BroadcastChannel 的浏览器走下面的 storage 事件 */ }
+
+  window.addEventListener('storage', function (event) {
+    if (event.key === 'night-library:read-aloud') hushForReading();
+  });
+
   window.nightMusic = {
     configure: function (musicCfg) {
       var cfg = musicCfg || {};

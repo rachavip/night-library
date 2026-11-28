@@ -23,11 +23,13 @@ RUN set -eux; \
     fi
 
 # python3 运行 vendor/kindleunpack（MOBI/AZW3 -> EPUB），poppler-utils 提供
-# pdftoppm 渲染扫描版 PDF 的首页当封面。两者合计约 30MB。
+# pdftoppm 渲染扫描版 PDF 的首页当封面，fonts-droid-fallback 是 PDF 转出时
+# 内嵌的中文字体（约 4.5MB，Apache-2.0；不嵌字体中文会全变成空白）。三者合计约 35MB。
 # 早先这里装的是 Calibre，为了 52 本 Kindle 书带进 ~700MB 的 Qt6。
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 \
       poppler-utils \
+      fonts-droid-fallback \
     && rm -rf /var/lib/apt/lists/* /usr/share/doc/* /usr/share/man/*
 
 ENV TZ=Asia/Shanghai \
@@ -52,7 +54,9 @@ COPY . .
 
 # prepare-vendor 把浏览器用的 bundle 从 node_modules 拷出来，之后 pdfjs-dist
 # （32MB 只用了两个文件）和 epubjs（6.6MB 只用了一个）就没用了，删掉省体积。
-# jszip 保留：server/convert.js 用它把 MOBI7 的散装目录重新压成 EPUB。
+# prepare-vendor 还会把 pdfjs 的 legacy build 拷到 vendor/pdfjs（约 2.8MB），
+# server/transform.js 在 Node 里读 PDF 文字层用的是那一份，删 node_modules 不影响。
+# jszip 保留：server/convert.js 与 server/transform.js 都用它打包。
 # vendor/kindleunpack 以单个 zip 分发（仓库里更新只需拖一个文件），这里解压后删除。
 #
 # obfuscate 把 server/ 与 public/js/ 就地换成混淆版本，让镜像里的代码难以阅读。

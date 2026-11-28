@@ -20,7 +20,6 @@
   var railStates = document.getElementById('rail-states');
   var railSeries = document.getElementById('rail-series');
   var railSeriesReset = document.getElementById('rail-series-reset');
-  var railTotal = document.getElementById('rail-total');
   var batchBar = document.getElementById('batch-bar');
   var batchCount = document.getElementById('batch-count');
   var seriesPicker = document.getElementById('series-picker');
@@ -46,7 +45,9 @@
   var visibleFormats = {};
   var hiddenFormats = {};
   var hiddenCount = 0;
-  var visibleCount = 0;
+  // 「藏书 N 册」说的是书库里一共多少本（含收起的）；书架默认视图和格式条
+  // 最前面那个「全部（不含隐藏）」说的是现在能看见多少本。两个数不一样才是对的。
+  var totalCount = 0;
   var booksById = {};
   var shelves = [];
   // Auto series are derived from titles; `mutedCount` counts the ones the
@@ -173,9 +174,14 @@
           note.textContent = '点顶栏「整理」，勾选不常看的书再点「隐藏」，它们就会收在这里。';
         } else {
           heading.textContent = '这一格还空着';
-          note.textContent = (state.shelf || state.status || state.q)
-            ? '当前这一堆里没有匹配的书。点最上方的「全部（不含隐藏）」回到整柜。'
-            : '把书放进挂载的文件夹，再点一次「刮削」就会出现在书架。';
+          if (state.shelf || state.status || state.q) {
+            note.textContent = '当前这一堆里没有匹配的书。点最上方的「全部（不含隐藏）」回到整柜。';
+          } else if (totalCount > 0 && hiddenCount >= totalCount) {
+            // 书都在，只是全收起来了：别让人以为书库空了。
+            note.textContent = '书都在，只是全收起来了。点格式条最右的「隐藏」能看到它们。';
+          } else {
+            note.textContent = '把书放进挂载的文件夹，再点一次「刮削」就会出现在书架。';
+          }
         }
       }
       syncBatch();
@@ -308,7 +314,8 @@
 
   function renderRail() {
     var t = totals();
-    railTotal.textContent = visibleCount + ' 册可见' + (hiddenCount ? ' · ' + hiddenCount + ' 隐藏' : '');
+    // 组标题旁不再标数：总数在左上角大标题，可见数在格式条最前面，收起的册数
+    // 在格式条右端那个「隐藏」上。同一件事说三遍只会让人怀疑哪个才对。
     // 这里不放「全部」：格式条最前面已经有一个，写两遍是重复。
     // 「隐藏」也不放：格式条末尾那个同样是它，入口只留一个。
     // 从「在读」这类筛选退出时，再点一次当前项就回到全部。
@@ -613,6 +620,8 @@
   var sheetAuthor = document.getElementById('book-sheet-author');
   var sheetMeta = document.getElementById('book-sheet-meta');
   var sheetNote = document.getElementById('book-sheet-note');
+  var sheetConvert = document.getElementById('book-sheet-convert');
+  var sheetConvertHint = document.getElementById('book-sheet-convert-hint');
   var sheetRescan = document.getElementById('book-sheet-rescan');
   var sheetOpen = document.getElementById('book-sheet-open');
   var sheetClose = document.getElementById('book-sheet-close');
@@ -645,6 +654,88 @@
   }
 
   var STATUS_LABEL = { unread: '未读', reading: '在读', finished: '读完' };
+
+  /* ---------- format conversion ---------- */
+  // 顺序照需求单排：EPUB / AZW3 / MOBI / DOCX / PDF / TXT。AZW3 与 MOBI 只有
+  // Calibre 写得出来，本镜像为控制体积没内置，所以固定置灰并配一行说明——
+  // 不做成「点了才报错」的坑，也不要假装这功能存在。
+  var CONVERT_ORDER = ['epub', 'azw3', 'mobi', 'docx', 'pdf', 'txt'];
+  var CONVERT_LABEL = { epub: 'EPUB', azw3: 'AZW3', mobi: 'MOBI', docx: 'DOCX', pdf: 'PDF', txt: 'TXT' };
+  var CONVERT_NEEDS_CALIBRE = { azw3: 1, mobi: 1 };
+  var transformCaps = null;
+
+  function renderConvert(book) {
+    var caps = transformCaps || {};
+    var src = String(book.format || '').toLowerCase();
+    sheetConvert.innerHTML = CONVERT_ORDER.map(function (t) {
+      var self = t === src;
+      var ok = !self && !CONVERT_NEEDS_CALIBRE[t] && caps[t] !== false;
+      var title = self
+        ? '已经是 ' + CONVERT_LABEL[t] + ' 格式'
+        : (CONVERT_NEEDS_CALIBRE[t]
+          ? '转为 ' + CONVERT_LABEL[t] + ' 需要 Calibre，本镜像没有内置'
+          : (ok ? '转为 ' + CONVERT_LABEL[t] + ' 并下载' : '镜像里缺少写 ' + CONVERT_LABEL[t] + ' 的组件'));
+      return '<button type="button" class="convert-btn" data-fmt="' + t + '"' +
+        (ok ? '' : ' disabled') + ' title="' + esc(title) + '">' + CONVERT_LABEL[t] + '</button>';
+    }).join('');
+
+    var hints = ['AZW3 / MOBI 需要 Calibre 才能写，本镜像没有内置'];
+    if (caps.pdf === false) hints.push('PDF 转换缺少中文字体或 pdfkit');
+    sheetConvertHint.textContent = hints.join('；') + '。';
+    sheetConvertHint.hidden = false;
+  }
+
+  // content-disposition is readable because this is a same-origin fetch.
+  function filenameFrom(res) {
+    var cd = res.headers.get('content-disposition') || '';
+    var star = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+    if (star) {
+      try { return decodeURIComponent(star[1]); } catch (e) { /* fall through */ }
+    }
+    var plain = /filename="?([^";]+)"?/i.exec(cd);
+    return plain ? plain[1] : '';
+  }
+
+  function saveBlob(blob, name) {
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    // The object URL must outlive the click, or Safari cancels the download.
+    setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
+  }
+
+  sheetConvert.addEventListener('click', async function (e) {
+    var btn = e.target.closest ? e.target.closest('button[data-fmt]') : null;
+    if (!btn || btn.disabled || !sheetBook) return;
+    var fmt = btn.getAttribute('data-fmt');
+    var label = CONVERT_LABEL[fmt] || String(fmt).toUpperCase();
+    btn.disabled = true;
+    btn.classList.add('is-busy');
+    btn.textContent = '转换中…';
+    try {
+      var res = await fetch('/api/book/' + encodeURIComponent(sheetBook.id) + '/transform/' + fmt);
+      if (!res.ok) {
+        var info = null;
+        try { info = await res.json(); } catch (err) { /* not json */ }
+        throw new Error((info && info.error) || '转换失败（HTTP ' + res.status + '）');
+      }
+      var blob = await res.blob();
+      if (!blob.size) throw new Error('转换结果是空文件，源文件可能加密或损坏');
+      saveBlob(blob, filenameFrom(res) || ((sheetBook.title || 'book') + '.' + fmt));
+      toast('已转为 ' + label + '，开始下载');
+    } catch (err) {
+      toast(err.message);
+    } finally {
+      btn.textContent = label;
+      btn.classList.remove('is-busy');
+      btn.disabled = false;
+    }
+  });
 
   function renderSheet(book) {
     sheetBook = book;
@@ -694,6 +785,8 @@
     if (!book.coverFile) notes.push('这本书没有真实封面（文件里就没带图）。重新刮削会再找一次。');
     sheetNote.hidden = notes.length === 0;
     sheetNote.textContent = notes.join(' ');
+
+    renderConvert(book);
   }
 
   function renderShelfPicker() {
@@ -1252,7 +1345,7 @@
     }, 0);
     var html = '<button class="filter" type="button" data-format="" aria-pressed="' +
       (!onHidden && !state.format && !state.shelf && !state.status && !state.q) +
-      '" title="回到整柜，清掉丛书、状态、格式与搜索">全部（不含隐藏）<em>' +
+      '" title="回到整柜（不含收起的书），清掉丛书、状态、格式与搜索">全部（不含隐藏）<em>' +
       visibleTotal + '</em></button>';
     Object.keys(source).sort().forEach(function (f) {
       html += '<button class="filter" type="button" data-format="' + esc(f) + '" aria-pressed="' +
@@ -1309,16 +1402,17 @@
       visibleFormats = stats.visibleFormats || formats;
       hiddenFormats = stats.hiddenFormats || {};
       hiddenCount = stats.hiddenCount || 0;
-      visibleCount = typeof stats.visibleCount === 'number' ? stats.visibleCount : stats.count;
+      totalCount = typeof stats.count === 'number' ? stats.count : 0;
+      transformCaps = stats.transform || null;
       lastScannedAt = stats.scannedAt;
       lastCount = stats.count;
       lastScanning = Boolean(stats.scanning);
-      document.getElementById('stat-count').textContent = visibleCount;
+      // 大标题是「藏书总量」，含收起的书——收起只是让它别占地方，没把它从书库拿走。
+      document.getElementById('stat-count').textContent = totalCount;
       var when = stats.scannedAt ? new Date(stats.scannedAt).toLocaleString('zh-CN', {
         month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit'
       }) : '从未';
       var bits = ['上次整理 ' + when];
-      if (hiddenCount) bits.push('已隐藏 ' + hiddenCount + ' 本');
       if (stats.scanning) bits.push('正在整理…');
       var last = stats.lastScan;
       if (last && last.reused > 0) {

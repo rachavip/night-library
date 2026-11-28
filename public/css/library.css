@@ -236,7 +236,6 @@ main { max-width: 1560px; margin: 0 auto; padding: 44px 40px 96px; }
   letter-spacing: var(--ls-head);
   color: var(--paper);
 }
-.rail-group-note { color: var(--dim); font-family: var(--mono); font-size: 11px; opacity: 0.7; white-space: nowrap; }
 .rail-add {
   padding: 0;
   color: var(--dim);
@@ -916,6 +915,43 @@ body.is-tidying .toast { bottom: 118px; }
 .book-sheet-meta dd { margin: 0; color: var(--paper); font-family: var(--mono); font-size: 12px; word-break: break-all; }
 .book-sheet-actions { display: flex; gap: 10px; margin-top: auto; }
 .book-sheet-hint { margin: 12px 0 0; color: var(--dim); font-size: 12px; line-height: 1.6; }
+
+/* 格式转换：六个小胶囊，左边一个色点区分格式。颜色只点在色点上，
+ * 文字始终跟随主题，浅色（paper）主题下不会出现白底白字。 */
+.convert-block { margin: 0 0 16px; }
+.convert-head { margin: 0 0 8px; color: var(--dim); font-size: 12px; letter-spacing: 0.08em; }
+.convert-row { display: flex; flex-wrap: wrap; gap: 7px; }
+.convert-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 13px 6px 11px;
+  color: var(--paper);
+  background: transparent;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  font-size: 13px;
+  letter-spacing: 0.03em;
+  transition: color 0.18s var(--ease), border-color 0.18s var(--ease), background 0.18s var(--ease);
+}
+.convert-btn::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fmt, var(--dim));
+}
+.convert-btn[data-fmt="epub"] { --fmt: #7CB342; }
+.convert-btn[data-fmt="azw3"] { --fmt: #3E9EDB; }
+.convert-btn[data-fmt="mobi"] { --fmt: #2FB9B9; }
+.convert-btn[data-fmt="docx"] { --fmt: #7386D0; }
+.convert-btn[data-fmt="pdf"] { --fmt: #E05A5A; }
+.convert-btn[data-fmt="txt"] { --fmt: #8A9299; }
+.convert-btn:hover:not(:disabled) { color: var(--fmt); border-color: var(--fmt); background: var(--amber-soft); }
+.convert-btn:disabled { opacity: 0.34; cursor: not-allowed; }
+.convert-btn.is-busy { opacity: 0.85; cursor: progress; border-color: var(--amber); color: var(--amber); }
+.convert-hint { margin: 8px 0 0; color: var(--dim); font-size: 12px; line-height: 1.55; }
+.convert-hint[hidden] { display: none; }
 @media (max-width: 620px) {
   .book-sheet { grid-template-columns: 1fr; gap: 16px; padding: 20px; }
   .book-sheet-cover { max-width: 140px; }

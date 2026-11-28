@@ -28,3 +28,19 @@ for (const [src, name] of copies) {
     console.warn('[vendor] missing (run npm install):', src);
   }
 }
+
+/* server/transform.js reads the text layer of a PDF in Node, which needs the
+ * legacy build plus its worker (pdf.js runs the worker in-process there). That
+ * lives one level up in vendor/pdfjs - not under public/, since it is a server
+ * dependency and there is no reason to serve it. */
+const legacyDest = path.join(root, 'vendor', 'pdfjs');
+fs.mkdirSync(legacyDest, { recursive: true });
+for (const name of ['pdf.js', 'pdf.worker.js']) {
+  const from = path.join(root, 'node_modules', 'pdfjs-dist', 'legacy', 'build', name);
+  if (fs.existsSync(from)) {
+    fs.copyFileSync(from, path.join(legacyDest, name));
+    console.log('[vendor] ready: vendor/pdfjs/' + name);
+  } else {
+    console.warn('[vendor] missing (run npm install): legacy/build/' + name);
+  }
+}

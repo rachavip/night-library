@@ -24,6 +24,7 @@
           <option value="actual">实际大小</option>
         </select>
       </div>
+      <button type="button" id="tts-open" title="朗读这本书（使用设备自带语音）" aria-label="朗读">🔊 朗读</button>
       <button type="button" id="notes-btn" title="笔记与书签" aria-label="笔记与书签">笔记</button>
       <button type="button" id="theme-btn" title="切换阅读主题">夜读</button>
       <div class="font-group" role="group" aria-label="字号">
@@ -54,6 +55,19 @@
     <button type="button" id="last" title="跳到最后一页（End）">末页</button>
   </footer>
 
+  <!-- read aloud: floats above the footer so turning it on never reflows the page -->
+  <div class="tts-bar" id="tts-bar" hidden role="group" aria-label="朗读控制">
+    <button type="button" class="tts-play" id="tts-play" aria-label="开始朗读">▶</button>
+    <button type="button" id="tts-prev" aria-label="上一句" title="上一句">⏮</button>
+    <button type="button" id="tts-next" aria-label="下一句" title="下一句">⏭</button>
+    <span class="tts-where" id="tts-where">未开始</span>
+    <label class="tts-rate">语速 <output id="tts-rate-out">1.0×</output>
+      <input id="tts-rate" type="range" min="0.6" max="1.8" step="0.1" value="1" aria-label="朗读语速">
+    </label>
+    <select id="tts-voice" aria-label="朗读音色"></select>
+    <button type="button" class="tts-close" id="tts-close" aria-label="关闭朗读">×</button>
+  </div>
+
   <div class="reader-error" id="reader-error" hidden>
     <h2>这本书暂时打不开</h2>
     <p id="reader-error-text"></p>
@@ -80,6 +94,7 @@
   <!-- appears next to a selection inside the book -->
   <div class="sel-bar" id="sel-bar" hidden>
     <button type="button" data-act="copy">复制</button>
+    <button type="button" data-act="speak">从这里读</button>
     <button type="button" data-act="highlight">高亮</button>
     <button type="button" data-act="note">写笔记</button>
     <button type="button" data-act="cancel" aria-label="取消">×</button>
@@ -102,5 +117,6 @@
   <script src="/vendor/jszip.min.js"></script>
   <script src="/vendor/epub.min.js"></script>
   <script src="/js/reader.js"></script>
+  <script src="/js/reader-tts.js"></script>
 </body>
 </html>

@@ -11,6 +11,7 @@ const taste = require('./taste');
 const hiddenStore = require('./hidden');
 const notes = require('./notes');
 const converter = require('./convert');
+const transformer = require('./transform');
 const settingsStore = require('./settings');
 const music = require('./music');
 const musicProxy = require('./musicproxy');
@@ -514,6 +515,7 @@ app.get('/api/stats', (req, res) => {
     visibleFormats,
     hiddenFormats,
     converter: converter.isAvailable(),
+    transform: transformer.available(),
     booksDir: cfg.booksDir,
     folders: currentIndex.folders || [],
     scanning: scanning,
@@ -734,6 +736,20 @@ app.get('/api/book/:id/file', (req, res) => {
   const file = bookFile(book);
   if (!file) return res.status(400).end();
   serveFile(req, res, file, MIME[book.format] || 'application/octet-stream');
+});
+
+// Format conversion, downloaded straight to the browser instead of being
+// written back into the library: storing the result would add a duplicate
+// record on the next scan, and the point here is "I need this book as a PDF
+// for someone else", not "I want two copies on my shelf".
+app.get('/api/book/:id/transform/:target', async (req, res) => {
+  const book = findBook(req.params.id);
+  if (!book) return res.status(404).json({ error: '没有找到这本书' });
+  const result = await transformer.transform(book, cfg, req.params.target);
+  if (!result.ok) return res.status(result.status || 422).json({ error: result.error });
+  res.download(result.file, result.name, err => {
+    if (err && !res.headersSent) res.status(500).json({ error: '文件传输中断：' + err.message });
+  });
 });
 
 app.get('/api/book/:id/progress', (req, res) => {
@@ -1182,10 +1198,14 @@ app.post('/api/folders/forget', async (req, res) => {
 
   let covers = 0;
   let converted = 0;
+  let transformed = 0;
+  const transformDir = path.join(cfg.dataDir, 'transformed');
   // Covers are stored as <id>.<ext>; list the directory once and match by
   // prefix. Reading it per book made a 800-book folder do 800 readdir calls.
   let coverFiles = [];
   try { coverFiles = await fsp.readdir(cfg.coverDir); } catch (e) { /* no cover dir yet */ }
+  let transformFiles = [];
+  try { transformFiles = await fsp.readdir(transformDir); } catch (e) { /* nothing converted yet */ }
   for (const id of ids) {
     for (const name of coverFiles) {
       if (name.startsWith(id + '.') || name === id) {
@@ -1199,6 +1219,15 @@ app.post('/api/folders/forget', async (req, res) => {
       await fsp.unlink(path.join(cfg.convertDir, id + '.epub'));
       converted++;
     } catch (e) { /* not converted */ }
+    // Format conversion output: <id>.epub/.txt/.docx/.pdf
+    for (const name of transformFiles) {
+      if (name.startsWith(id + '.')) {
+        try {
+          await fsp.unlink(path.join(transformDir, name));
+          transformed++;
+        } catch (e) { /* already gone */ }
+      }
+    }
   }
 
   // Book ids live in five state files. Prune by id, then persist each one.
@@ -1258,8 +1287,8 @@ app.post('/api/folders/forget', async (req, res) => {
     try { await reading.save(cfg, readingState); } catch (e) { /* best effort */ }
   }
 
-  console.log(`[folders/forget] ${folder}: ${ids.length} 册 · 封面 ${covers} · 缓存 ${converted} · 进度 ${progressRemoved} · 笔记 ${notesRemoved} · 书单 ${shelvesRemoved} · 台账 ${ledgerRemoved}`);
-  res.json({ ok: true, books: ids.length, covers, converted, progress: progressRemoved, notes: notesRemoved, shelves: shelvesRemoved, ledger: ledgerRemoved });
+  console.log(`[folders/forget] ${folder}: ${ids.length} 册 · 封面 ${covers} · 缓存 ${converted} · 转换产物 ${transformed} · 进度 ${progressRemoved} · 笔记 ${notesRemoved} · 书单 ${shelvesRemoved} · 台账 ${ledgerRemoved}`);
+  res.json({ ok: true, books: ids.length, covers, converted, transformed, progress: progressRemoved, notes: notesRemoved, shelves: shelvesRemoved, ledger: ledgerRemoved });
 });
 
 // One scan path for manual, startup and scheduled runs. The lock keeps the

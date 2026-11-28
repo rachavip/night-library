@@ -65,7 +65,6 @@
           <section class="rail-group">
             <div class="rail-group-head">
               <h2>藏书</h2>
-              <span class="rail-group-note" id="rail-total"></span>
             </div>
             <div class="rail-items" id="rail-states"></div>
           </section>
@@ -161,6 +160,11 @@
         </div>
       </div>
       <dl class="book-sheet-meta" id="book-sheet-meta"></dl>
+      <div class="convert-block">
+        <p class="convert-head">转为其他格式</p>
+        <div class="convert-row" id="book-sheet-convert"></div>
+        <p class="convert-hint" id="book-sheet-convert-hint" hidden>AZW3 / MOBI 需要 Calibre 才能写，本镜像为控制体积没有内置；EPUB、TXT、DOCX、PDF 四种可以直接转。</p>
+      </div>
       <div class="book-sheet-actions">
         <button type="button" class="ghost-btn" id="book-sheet-open">打开阅读</button>
         <button type="button" class="primary-btn" id="book-sheet-rescan">重新刮削这本</button>

@@ -35,6 +35,11 @@
   // without threading the rendition through every helper.
   var epubBook = null;
   var epubRendition = null;
+  // 朗读要靠引擎自己回答两件事：当前这一页/这一章有哪些段落，以及整本有没有
+  // 文字层。分页结果、PDF 页码、EPUB 的 section 都只有各自的 init 里知道，
+  // 所以由它们赋值，朗读脚本通过 window.NightReaderSpeech 只读地拿。
+  var speechSource = null;
+  var speechProbe = null;
 
   function esc(s) {
     return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
@@ -99,6 +104,10 @@
       if (document.activeElement !== pageInput) pageInput.value = pages.current;
     }
     scheduleSave(p, engine.location());
+    // 朗读需要知道位置变了：手动翻页后不能继续读上一页的句子。
+    if (window.NightReaderTTS && window.NightReaderTTS.pageChanged) {
+      window.NightReaderTTS.pageChanged();
+    }
   }
 
   // Accepts anything with digits in it ("12", " 12 ", "12页").
@@ -376,6 +385,63 @@
       applyTheme: function () { return engine.goto(current); }
     };
 
+    // A PDF has lines, not paragraphs: glue wrapped lines back together until a
+    // sentence ends, otherwise speech would stop dead at every line break.
+    function pdfParagraphs(items) {
+      var lines = [];
+      var buf = '';
+      (items || []).forEach(function (item) {
+        if (item.str) buf += item.str;
+        if (item.hasEOL) {
+          if (buf.trim()) lines.push(buf.trim());
+          buf = '';
+        }
+      });
+      if (buf.trim()) lines.push(buf.trim());
+      var out = [];
+      var para = '';
+      lines.forEach(function (line) {
+        para += line;
+        // Chinese full stops and their English cousins both end a sentence; so
+        // do closing quotes and brackets, which is where PDF text often stops.
+        if (/[。！？!?…；;：:.、"”』」】)）]$/.test(line) || para.length > 160) {
+          if (para.trim()) out.push(para.trim());
+          para = '';
+        }
+      });
+      if (para.trim()) out.push(para.trim());
+      return out;
+    }
+
+    speechSource = async function () {
+      var page = await doc.getPage(current);
+      var content = await page.getTextContent();
+      var paragraphs = pdfParagraphs(content && content.items);
+      return {
+        ok: paragraphs.length > 0,
+        paragraphs: paragraphs,
+        page: current,
+        total: doc.numPages,
+        reason: paragraphs.length ? '' : '这一页没有可提取的文字'
+      };
+    };
+
+    // A scanned PDF is one big image: every page has an empty text layer. Sample
+    // three pages instead of reading all of them, so the answer arrives instantly.
+    speechProbe = async function () {
+      var samples = [1];
+      if (doc.numPages > 2) samples.push(Math.ceil(doc.numPages / 2));
+      if (doc.numPages > 1) samples.push(doc.numPages);
+      for (var i = 0; i < samples.length; i++) {
+        try {
+          var page = await doc.getPage(samples[i]);
+          var content = await page.getTextContent();
+          if (content && content.items && content.items.length) return true;
+        } catch (e) { /* one bad page must not condemn the whole book */ }
+      }
+      return false;
+    };
+
     zoomSelect.value = zoomMode;
     zoomGroup.hidden = false;
     fontGroup.hidden = true;
@@ -512,6 +578,52 @@
         });
       }
     };
+
+    // EPUB sections are plain HTML, so a paragraph is whatever block element the
+    // publisher used. Only innermost blocks are taken: a <li> wrapping a <p>
+    // would otherwise be read twice.
+    function epubParagraphs(doc) {
+      if (!doc || !doc.body) return [];
+      var nodes = doc.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li, blockquote, dd, dt, figcaption, td');
+      var out = [];
+      Array.prototype.forEach.call(nodes, function (node) {
+        if (node.querySelector('p, li, blockquote, dd, dt, figcaption')) return;
+        var text = String(node.textContent || '').replace(/\s+/g, ' ').trim();
+        if (text) out.push(text);
+      });
+      if (!out.length) {
+        String(doc.body.innerText || doc.body.textContent || '')
+          .split(/\r?\n/)
+          .forEach(function (line) {
+            var text = line.replace(/\s+/g, ' ').trim();
+            if (text) out.push(text);
+          });
+      }
+      return out;
+    }
+
+    speechSource = function () {
+      var contents = typeof rendition.getContents === 'function' ? rendition.getContents() : [];
+      var doc = contents && contents[0] ? contents[0].document : null;
+      if (!doc) {
+        return Promise.resolve({
+          ok: false, paragraphs: [], page: currentIndex() + 1, total: book.spine.length,
+          reason: '这一章还没排版好，稍等一下再点朗读'
+        });
+      }
+      var paragraphs = epubParagraphs(doc);
+      return Promise.resolve({
+        ok: paragraphs.length > 0,
+        paragraphs: paragraphs,
+        page: currentIndex() + 1,
+        total: book.spine.length,
+        reason: paragraphs.length ? '' : '这一节没有文字，可能是插图页'
+      });
+    };
+    // An EPUB is text by definition; a picture-only page is reported by
+    // speechSource instead of condemning the whole book here.
+    speechProbe = function () { return Promise.resolve(true); };
+
     rendition.on('rendered', function (section, view) {
       engine.applyTheme(theme, fontSize);
       // epub.js only paints annotations that were added while a section was
@@ -596,6 +708,18 @@
       jumpPage: function (n) { engine.goto(clamp(n, 1, pages.length) - 1); },
       applyTheme: function () { render(); }
     };
+
+    speechSource = function () {
+      var page = (pages[pageIndex] || []).filter(Boolean);
+      return Promise.resolve({
+        ok: page.length > 0,
+        paragraphs: page,
+        page: pageIndex + 1,
+        total: pages.length,
+        reason: page.length ? '' : '这一页没有文字'
+      });
+    };
+    speechProbe = function () { return Promise.resolve(true); };
 
     paginate();
     var start = Number(saved && saved.location) || 0;
@@ -1124,6 +1248,14 @@
       toast(copied ? '已复制 ' + picked.length + ' 字' : '复制失败，选中后按 Ctrl+C 试试');
       return;
     }
+    if (act === 'speak') {
+      // 先记住选中的文字再清选区：朗读要从这一句起，选区留着反而挡视线。
+      var spoken = pendingSelection ? pendingSelection.text : '';
+      clearSelection();
+      if (window.NightReaderTTS) window.NightReaderTTS.startFrom(spoken);
+      else toast('朗读还没准备好，稍后再试');
+      return;
+    }
     if (act === 'highlight') {
       hideSelBar();
       try {
@@ -1266,6 +1398,39 @@
     });
     setInterval(tickClock, 15000);
   }
+
+  /* ---------------- read-aloud bridge ---------------- */
+  // reader-tts.js owns the player and must not reach into this closure. These
+  // five calls are the whole contract between the two files.
+  window.NightReaderSpeech = {
+    type: function () { return engine ? engine.type : ''; },
+    read: function () {
+      if (!speechSource) {
+        return Promise.resolve({ ok: false, paragraphs: [], reason: '这本书还在打开，稍等一下再试' });
+      }
+      return Promise.resolve(speechSource());
+    },
+    probe: function () {
+      if (!speechProbe) return Promise.resolve(true);
+      return Promise.resolve(speechProbe());
+    },
+    canNext: function () { return !!(engine && engine.canNext()); },
+    nextPage: function () {
+      if (!engine || !engine.canNext()) return Promise.resolve(false);
+      return Promise.resolve(engine.next()).then(function () {
+        // EPUB paints its next section asynchronously; give it a beat so the
+        // text we are about to read belongs to the section now on screen.
+        return new Promise(function (resolve) { setTimeout(resolve, 350); });
+      }).then(function () { return true; });
+    },
+    label: function () { return engine ? engine.label() : ''; },
+    // 位置标识：PDF 是页码，TXT 是页序，EPUB 是 CFI。朗读用它判断「读者是不是
+    // 自己翻页了」——同一次位置不该被 resize、换主题这类重绘当成翻页。
+    location: function () { return engine ? engine.location() : ''; }
+  };
+  // The speech script has no toast of its own; borrowing this one keeps the
+  // wording in one place and the styling identical.
+  window.nightReaderToast = toast;
 
   /* ---------------- boot ---------------- */
   async function boot() {

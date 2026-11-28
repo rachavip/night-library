@@ -11,3 +11,7 @@ logo.png
 
 # 混淆产物（scripts/obfuscate.js --out 的默认输出位置）
 .obf/
+
+# 从 node_modules 拷出来的服务端 pdf.js legacy build，npm install 的
+# postinstall（scripts/prepare-vendor.js）会自动重建，2.8MB 不必进仓库
+vendor/pdfjs/
