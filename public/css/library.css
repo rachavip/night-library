@@ -610,11 +610,12 @@ button.shelf-picker-row:hover { color: var(--amber); }
   transform: translateY(-1px);
   box-shadow: 0 10px 26px rgba(0, 0, 0, 0.3), inset 0 0 0 1px var(--amber-soft);
 }
-.guestbook-cta-icon { flex: 0 0 auto; color: var(--amber); font-size: 16px; line-height: 1; }
+.guestbook-cta-icon { flex: 0 0 auto; color: var(--amber); font-size: 18px; line-height: 1; }
 .guestbook-cta-body { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+/* 比下面的「藏书」组名（18.5px）再大一档，让左栏这个入口先被看见。 */
 .guestbook-cta-body strong {
   font-family: var(--f-head);
-  font-size: 15px;
+  font-size: 20px;
   font-weight: var(--w-head);
   letter-spacing: 1px;
   color: var(--amber);
@@ -969,6 +970,8 @@ body.is-tidying .toast { bottom: 118px; }
   /* 横排时组名下面压一条 2px 琥珀线会显得很重，收成 1px */
   .rail-group-head { border-bottom-width: 1px; }
   .rail-group-head h2 { font-size: 17px; }
+  /* 手机上组名降到 17px，「留言板」跟着降一档，但始终保持比组名大。 */
+  .guestbook-cta-body strong { font-size: 18.5px; }
   .rail-items { flex-direction: row; flex-wrap: wrap; gap: 6px; }
   .rail-item {
     width: auto;

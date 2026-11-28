@@ -503,24 +503,56 @@
   /* ---------- 留言板同步 ---------- */
   // 两件事：体检（到底卡在哪一步）和补传（令牌填晚了，之前那几条一直没上去）。
   // 都在设置抽屉里，访客看不到，也用不着令牌。
+  function sec(ms) {
+    return (Math.max(0, Number(ms) || 0) / 1000).toFixed(1) + ' 秒';
+  }
+
+  /* 卡在哪一步，比总耗时有用得多：
+   *   TCP 都没连上 → 线路/路由不通，改超时没用
+   *   TCP 通了、握手没完成 → 能到 GitHub，但加密握手过不去 */
+  function phaseText(p) {
+    if (!p) return '';
+    if (p.tcpMs == null) return 'TCP 都没连上';
+    var out = 'TCP 通了 ' + sec(p.tcpMs);
+    if (p.tlsMs == null) out += '，但 TLS 握手没完成';
+    else out += '，握手 ' + sec(p.tlsMs);
+    return out;
+  }
+
   function describeDiag(d) {
     var bits = [];
     if (d.dns && d.dns.length) bits.push('域名解析到 ' + d.dns.join(' / '));
     else bits.push('域名解析失败' + (d.dnsError ? '（' + d.dnsError + '）' : ''));
 
     var api = d.api || {};
-    if (api.status) bits.push('api.github.com 能连上，HTTP ' + api.status + ' · ' + (api.ms / 1000).toFixed(1) + ' 秒');
-    else bits.push('api.github.com 连不上：' + (api.error || '没有响应'));
+    if (api.status) {
+      bits.push('能连上 api.github.com，HTTP ' + api.status + '，总共 ' + sec(api.ms) +
+        (api.tcpMs != null ? '（' + phaseText(api) + '）' : ''));
+    } else {
+      var where = phaseText(api);
+      // 超时的原因已经由「卡在哪一步」说清楚了，再叠一句「等 15 秒没有回应」是废话。
+      var tail = api.code === 'ETIMEDOUT' ? '' : (api.error || '没有响应');
+      bits.push('连不上 api.github.com：' + (where ? where + (tail ? '；' : '') : '') + tail);
+    }
 
-    if (d.hasToken) {
+    if (!d.hasToken) {
+      bits.push('还没填令牌');
+    } else {
       var repo = d.repo || {};
       if (repo.status === 200) bits.push('令牌能读仓库');
       else if (repo.status === 401) bits.push('令牌被拒（HTTP 401，多半已过期或被撤销）');
       else if (repo.status === 403) bits.push('令牌权限不够（HTTP 403，Contents 要给 Read and write）');
       else if (repo.status) bits.push('令牌请求返回 HTTP ' + repo.status);
       else bits.push('令牌请求没发出去：' + (repo.error || '没有响应'));
-    } else {
-      bits.push('还没填令牌');
+    }
+
+    // 只在「TCP 通、握手不通」时给建议，别的毛病说这些反而添乱。
+    if (!api.status) {
+      if (api.tcpMs != null && api.tlsMs == null) {
+        bits.push('这一段是容器到 GitHub 的加密握手过不去，和宿主机上的 curl 走的不是同一条路；可试 network_mode: host，或把 docker 网桥 MTU 降到 1400');
+      } else if (api.tcpMs == null && api.code) {
+        bits.push('容器连 GitHub 的 TCP 都没建立，属出网不通，需要在 compose 里换网络方式或给容器配代理');
+      }
     }
     return bits.join('；') + '。';
   }

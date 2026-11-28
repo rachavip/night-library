@@ -12,7 +12,11 @@ const fsp = fs.promises;
 const path = require('path');
 const crypto = require('crypto');
 const dns = require('dns');
+const net = require('net');
+const tls = require('tls');
 const https = require('https');
+
+const HOST = 'api.github.com';
 
 const REPO = 'rachavip/night-library';
 const BRANCH = 'main';
@@ -147,15 +151,21 @@ function reason(err) {
 }
 
 /* 直连 api.github.com 的小封装：只用 IPv4，超时自己管，返回状态码和耗时。
- * 证书错误、连接被拒、域名解析失败都会带着各自的 code 抛出来，方便报给使用者。 */
+ * 证书错误、连接被拒、域名解析失败都会带着各自的 code 抛出来，方便报给使用者。
+ * 顺手记下「TCP 建连」和「TLS 握手」各自花了多久：出问题时最要紧的就是这两个数，
+ * 只看总耗时永远分不清是路不通、握手被卡，还是服务器不回话。 */
 function httpsRequest(options) {
   return new Promise((resolve, reject) => {
     const started = Date.now();
     let settled = false;
+    let tcpMs = null;
+    let tlsMs = null;
     const req = https.request({
-      host: 'api.github.com',
+      host: HOST,
       port: 443,
       family: 4,
+      // 每次都用新连接：池子里的旧连接可能早就半死了，复用它只会挂到超时。
+      agent: false,
       method: options.method || 'GET',
       path: options.path,
       headers: options.headers
@@ -168,18 +178,29 @@ function httpsRequest(options) {
         resolve({
           status: res.statusCode,
           body: Buffer.concat(chunks).toString('utf8'),
-          ms: Date.now() - started
+          ms: Date.now() - started,
+          tcpMs,
+          tlsMs
         });
       });
     });
+    req.on('socket', socket => {
+      // TLSSocket 一创建 `encrypted` 就是 true，不能拿它判断握手有没有发生；
+      // 这里 agent:false，拿到的必定是新连接，直接等 connect / secureConnect。
+      if (socket.connecting) socket.once('connect', () => { tcpMs = Date.now() - started; });
+      else tcpMs = 0;
+      socket.once('secureConnect', () => { tlsMs = Date.now() - started - (tcpMs || 0); });
+    });
     req.setTimeout(TIMEOUT_MS, () => {
-      const err = new Error('等 ' + Math.round(TIMEOUT_MS / 1000) + ' 秒还没握手完成');
+      const err = new Error('等 ' + Math.round(TIMEOUT_MS / 1000) + ' 秒还没完成');
       err.code = 'ETIMEDOUT';
       req.destroy(err);
     });
     req.on('error', e => {
       if (settled) return;
       settled = true;
+      e.tcpMs = tcpMs;
+      e.tlsMs = tlsMs;
       reject(e);
     });
     if (options.body) req.write(options.body);
@@ -214,9 +235,16 @@ async function putOnce(pathname, body, token) {
     return res;
   } catch (e) {
     if (e.httpStatus) throw e;
-    if (e.code === 'ETIMEDOUT') throw new Error('GitHub 连接超时（15 秒没完成握手）');
+    if (e.code === 'ETIMEDOUT') throw new Error('GitHub 连接超时' + stallHint(e));
     throw new Error('GitHub 连接失败' + reason(e));
   }
+}
+
+/* 卡在哪一步：TCP 都没连上，还是 TCP 通了但握手过不去。这句话比耗时更有用，
+ * 前者是线路/路由问题，后者是握手被卡（换网络环境或缩短路径才有用）。 */
+function stallHint(e) {
+  if (e.tcpMs == null) return '（TCP 都没连上）';
+  return '（TCP 通了 ' + (e.tcpMs / 1000).toFixed(1) + ' 秒，但 TLS 握手没完成）';
 }
 
 /* GitHub Contents API. Each message gets its own file so two submissions can
@@ -304,19 +332,27 @@ async function diag(settings) {
           token ? { 'Authorization': 'Bearer ' + token } : {}
         )
       });
-      return { status: res.status, ms: res.ms, error: '' };
+      return { status: res.status, ms: res.ms, tcpMs: res.tcpMs, tlsMs: res.tlsMs, error: '' };
     } catch (e) {
       return {
         status: 0,
         ms: Date.now() - started,
-        error: e.code === 'ETIMEDOUT' ? '超时（15 秒没完成握手）' : reason(e)
+        tcpMs: e.tcpMs == null ? null : e.tcpMs,
+        tlsMs: e.tlsMs == null ? null : e.tlsMs,
+        error: e.code === 'ETIMEDOUT' ? '等 15 秒没有任何回应' : reason(e),
+        code: e.code || ''
       };
     }
   };
 
   out.api = await probe('/rate_limit');
   const token = String((settings && settings.guestbookToken) || '');
-  if (token) out.repo = await probe('/repos/' + REPO, token);
+  if (token) {
+    // 握手都没过去，令牌那次注定也过不去，别再让人多等一个 15 秒。
+    out.repo = out.api.status
+      ? await probe('/repos/' + REPO, token)
+      : { status: 0, ms: 0, tcpMs: null, tlsMs: null, error: '没测（上一步就没通）', code: 'SKIPPED' };
+  }
   return out;
 }
 
